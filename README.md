@@ -31,8 +31,7 @@ The rise of AI coding assistants (Copilot, Claude, Cursor) is changing how we wr
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew tap juangracia/gitrespect
-brew install gitrespect
+brew install juangracia/gitrespect/gitrespect
 ```
 
 ### Using Go
