@@ -195,3 +195,67 @@ func getChangeEmoji(multiplier float64) string {
 	}
 	return " 📉"
 }
+
+func TeamTerminal(stats git.TeamStats) error {
+	workingDays := git.WorkingDays(stats.Since, stats.Until)
+	locPerDay := float64(stats.TotalNet) / float64(workingDays)
+
+	dateRange := fmt.Sprintf("%s to %s", stats.Since.Format("Jan 2 2006"), stats.Until.Format("Jan 2 2006"))
+
+	fmt.Println()
+	fmt.Printf("%s%s gitrespect%s - Team Report\n", colorBold, colorCyan, colorReset)
+	fmt.Printf("%s%s%s\n", colorDim, dateRange, colorReset)
+	fmt.Println(strings.Repeat("─", 60))
+	fmt.Println()
+
+	// Team totals
+	fmt.Printf("  %sTeam Totals%s\n", colorBold, colorReset)
+	fmt.Printf("  %sAdded%s       %sDeleted%s     %sNet%s         %sCommits%s\n",
+		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+	fmt.Println("  " + strings.Repeat("─", 44))
+	fmt.Printf("  %s%-11s%s %-11s %s%-11s%s %-8d\n",
+		colorGreen, formatNumber(stats.TotalAdded), colorReset,
+		formatNumber(stats.TotalDeleted),
+		colorCyan, formatNumber(stats.TotalNet), colorReset,
+		stats.TotalCommits)
+	fmt.Println()
+
+	fmt.Printf("  %sTeam daily avg:%s %.0f lines/day (%d working days)\n",
+		colorDim, colorReset, locPerDay, workingDays)
+	fmt.Println()
+
+	// Member breakdown - sort by net lines descending
+	type memberEntry struct {
+		email string
+		stats git.RepoStats
+	}
+	var members []memberEntry
+	for email, ms := range stats.Members {
+		members = append(members, memberEntry{email, ms})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].stats.Net > members[j].stats.Net
+	})
+
+	fmt.Printf("  %sTeam Members%s\n", colorBold, colorReset)
+	fmt.Printf("  %sContributor%s                         %sNet%s       %sCommits%s  %s/day%s\n",
+		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+	fmt.Println("  " + strings.Repeat("─", 56))
+
+	for _, m := range members {
+		memberDaily := float64(m.stats.Net) / float64(workingDays)
+		// Truncate email if too long
+		email := m.email
+		if len(email) > 32 {
+			email = email[:29] + "..."
+		}
+		fmt.Printf("  %-34s %s%-10s%s %-8d %.0f\n",
+			email,
+			colorCyan, formatNumber(m.stats.Net), colorReset,
+			m.stats.Commits,
+			memberDaily)
+	}
+	fmt.Println()
+
+	return nil
+}

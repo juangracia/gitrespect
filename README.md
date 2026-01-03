@@ -2,7 +2,29 @@
 
 > Respect your git work with real metrics
 
-A fast CLI tool that analyzes git repositories and provides developer productivity metrics. See your lines of code, compare against industry benchmarks, and measure the impact of workflow changes.
+A fast CLI tool that analyzes git repositories and provides comprehensive developer productivity metrics. **Measure the real impact of AI tools on your productivity**, track team contributions, and compare against industry benchmarks.
+
+![gitrespect report](screenshots/report-full.png)
+
+## Why gitrespect?
+
+**Measure AI Impact on Productivity**
+
+The rise of AI coding assistants (Copilot, Claude, Cursor) is changing how we write code. But how do you know if it's actually making you more productive? gitrespect lets you:
+
+- Compare your output before vs after adopting AI tools
+- Quantify the productivity multiplier with real data
+- Track team-wide AI adoption impact
+- Generate shareable reports for stakeholders
+
+## Features
+
+- **AI Productivity Comparison** - Measure before/after impact of AI tools on your workflow
+- **Team Analysis** - Analyze multiple contributors as a team or organization
+- **Lines of Code** - Track added, deleted, and net lines across repositories
+- **Multi-repo Support** - Analyze multiple repositories at once
+- **Industry Comparison** - Compare against senior dev, industry avg, and junior dev benchmarks
+- **Multiple Output Formats** - Terminal, HTML reports (dark mode), JSON export
 
 ## Installation
 
@@ -36,8 +58,8 @@ gitrespect
 
 Output:
 ```
- gitrespect - juan.gracia@example.com
-asset-api (Dec 4 2025 to Jan 3 2026)
+ gitrespect - developer@example.com
+my-project (Dec 4 2025 to Jan 3 2026)
 ──────────────────────────────────────────────────
 
   Added       Deleted     Net         Commits
@@ -50,6 +72,64 @@ asset-api (Dec 4 2025 to Jan 3 2026)
   ├── Senior Dev (20/day):     6.4x ████████████████████░░░░
   ├── Industry Avg (50/day):   2.5x ████████░░░░░░░░░░░░░░░░
   └── Junior Dev (100/day):    1.3x ████░░░░░░░░░░░░░░░░░░░░
+```
+
+### Measure AI Impact (Before/After Comparison)
+
+The killer feature: measure how AI tools have changed your productivity.
+
+```bash
+gitrespect compare --before=2025-01:2025-07 --after=2025-08:2025-12
+```
+
+![gitrespect compare](screenshots/compare-report.png)
+
+Output:
+```
+ gitrespect - Period Comparison
+──────────────────────────────────────────────────
+
+  Period           Net Lines   Days    Per Day
+  ─────────────    ──────────  ──────  ────────
+  2025-01:2025-07  6,308       154     41
+  2025-08:2025-12  32,164      110     292
+
+  Change: +7.1x productivity increase 🚀
+```
+
+**Use cases:**
+- Before/after adopting GitHub Copilot
+- Before/after switching to Claude or Cursor
+- Comparing productivity across different project phases
+- Quantifying the ROI of AI tools for your team
+
+### Team Analysis
+
+Analyze contributions across your entire team:
+
+```bash
+gitrespect --team=dev1@company.com,dev2@company.com,dev3@company.com --year=2025
+```
+
+Output:
+```
+ gitrespect - Team Report
+Jan 1 2025 to Dec 31 2025
+────────────────────────────────────────────────────────────
+
+  Team Totals
+  Added       Deleted     Net         Commits
+  ────────────────────────────────────────────
+  45,230      3,127       42,103      312
+
+  Team daily avg: 162 lines/day (260 working days)
+
+  Team Members
+  Contributor                         Net       Commits  /day
+  ────────────────────────────────────────────────────────
+  dev1@company.com                    18,450    128      71
+  dev2@company.com                    15,230    98       59
+  dev3@company.com                    8,423     86       32
 ```
 
 ### Analyze Specific Path
@@ -100,25 +180,10 @@ gitrespect --year=2025 --breakdown=monthly --output=html --file=report.html
 gitrespect --output=json --file=stats.json
 ```
 
-### Compare Time Periods
-
-Measure the impact of workflow changes, AI adoption, or other productivity improvements:
+### Team HTML Report
 
 ```bash
-gitrespect compare --before=2025-01:2025-07 --after=2025-08:2025-12
-```
-
-Output:
-```
- gitrespect - Period Comparison
-──────────────────────────────────────────────────
-
-  Period           Net Lines   Days    Per Day
-  ─────────────    ──────────  ──────  ────────
-  2025-01:2025-07  6,308       154     41
-  2025-08:2025-12  32,164      110     292
-
-  Change: +7.1x productivity increase 🚀
+gitrespect --team=dev1@example.com,dev2@example.com --output=html --file=team-report.html
 ```
 
 ## All Options
@@ -128,6 +193,7 @@ gitrespect [paths...] [flags]
 
 Flags:
   -a, --author string      Filter by author email (default: git config user.email)
+  -t, --team strings       Team mode: analyze multiple authors (comma-separated emails)
   -s, --since string       Start date (YYYY-MM-DD or "30 days ago") (default: "30 days ago")
   -u, --until string       End date (default: now)
       --year int           Filter by year (e.g., --year=2025)
@@ -157,9 +223,30 @@ gitrespect compares your output against commonly cited industry benchmarks:
 
 gitrespect uses `git log --numstat` to count lines added and deleted per commit, filtered by author and date range. It calculates working days (approximately 5/7 of calendar days) for daily averages.
 
+## Use Cases
+
+### For Individual Developers
+- Track your personal productivity trends
+- Measure impact of new tools or workflows
+- Generate reports for performance reviews
+- Compare productivity across different projects
+
+### For Engineering Managers
+- Understand team contribution patterns
+- Measure team-wide AI tool adoption impact
+- Identify productivity trends
+- Generate reports for stakeholders
+
+### For Organizations
+- Quantify ROI of AI coding tools
+- Compare team productivity metrics
+- Track productivity before/after process changes
+
 ## Contributing
 
 Contributions welcome! Please open an issue or submit a PR.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Author
 

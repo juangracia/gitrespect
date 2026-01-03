@@ -654,3 +654,189 @@ func CompareHTML(comparison git.CompareStats, filename string) error {
 	fmt.Printf("✓ Report saved to %s\n", filename)
 	return nil
 }
+
+type TeamHTMLData struct {
+	Since        string
+	Until        string
+	TotalAdded   int
+	TotalDeleted int
+	TotalNet     int
+	TotalCommits int
+	WorkingDays  int
+	PerDay       float64
+	Members      []TeamMemberHTMLData
+}
+
+type TeamMemberHTMLData struct {
+	Email   string
+	Added   int
+	Deleted int
+	Net     int
+	Commits int
+	PerDay  float64
+	IsTop   bool
+}
+
+const teamHtmlTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>gitrespect - Team Report</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --text-muted: #484f58;
+            --accent: #58a6ff;
+            --success: #3fb950;
+            --warning: #d29922;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            min-height: 100vh;
+        }
+
+        .container { max-width: 900px; margin: 0 auto; padding: 32px 24px; }
+
+        header { margin-bottom: 32px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+        .logo { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; }
+        h1 { font-size: 24px; font-weight: 600; }
+        .period { font-size: 14px; color: var(--text-secondary); margin-top: 4px; }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px; }
+        @media (max-width: 640px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+
+        .stat-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; }
+        .stat-label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .stat-value { font-size: 28px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; }
+        .stat-value.added { color: var(--success); }
+        .stat-value.deleted { color: var(--warning); }
+        .stat-value.net { color: var(--accent); }
+
+        .section { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 20px; margin-bottom: 24px; }
+        .section-title { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .daily-stat { font-size: 32px; font-weight: 600; color: var(--accent); font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; }
+        .daily-label { color: var(--text-secondary); font-size: 14px; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th { text-align: left; padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+        th:not(:first-child) { text-align: right; }
+        td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; }
+        td:not(:first-child) { text-align: right; }
+        tr:hover { background: var(--bg-tertiary); }
+        .top-row td { color: var(--success); font-weight: 600; }
+
+        footer { text-align: center; padding: 24px; color: var(--text-muted); font-size: 12px; }
+        footer a { color: var(--accent); text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">$ gitrespect --team</div>
+            <h1>Team Report</h1>
+            <div class="period">{{.Since}} — {{.Until}}</div>
+        </header>
+
+        <div class="stats-grid">
+            <div class="stat-card"><div class="stat-label">Team Added</div><div class="stat-value added">+{{.TotalAdded}}</div></div>
+            <div class="stat-card"><div class="stat-label">Team Deleted</div><div class="stat-value deleted">-{{.TotalDeleted}}</div></div>
+            <div class="stat-card"><div class="stat-label">Team Net</div><div class="stat-value net">{{.TotalNet}}</div></div>
+            <div class="stat-card"><div class="stat-label">Team Commits</div><div class="stat-value">{{.TotalCommits}}</div></div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Team Daily Output</div>
+            <div class="daily-stat">{{printf "%.0f" .PerDay}}</div>
+            <div class="daily-label">lines/day ({{.WorkingDays}} working days)</div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Team Members</div>
+            <table>
+                <thead><tr><th>Contributor</th><th>Added</th><th>Deleted</th><th>Net</th><th>Commits</th><th>/Day</th></tr></thead>
+                <tbody>
+                    {{range .Members}}
+                    <tr{{if .IsTop}} class="top-row"{{end}}><td>{{.Email}}</td><td>+{{.Added}}</td><td>-{{.Deleted}}</td><td>{{.Net}}</td><td>{{.Commits}}</td><td>{{printf "%.0f" .PerDay}}</td></tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+
+        <footer>Generated by <a href="https://github.com/juangracia/gitrespect">gitrespect</a></footer>
+    </div>
+</body>
+</html>`
+
+func TeamHTML(stats git.TeamStats, filename string) error {
+	workingDays := git.WorkingDays(stats.Since, stats.Until)
+
+	data := TeamHTMLData{
+		Since:        stats.Since.Format("Jan 2, 2006"),
+		Until:        stats.Until.Format("Jan 2, 2006"),
+		TotalAdded:   stats.TotalAdded,
+		TotalDeleted: stats.TotalDeleted,
+		TotalNet:     stats.TotalNet,
+		TotalCommits: stats.TotalCommits,
+		WorkingDays:  workingDays,
+		PerDay:       float64(stats.TotalNet) / float64(workingDays),
+	}
+
+	// Sort members by net lines descending
+	type memberEntry struct {
+		email string
+		stats git.RepoStats
+	}
+	var members []memberEntry
+	for email, ms := range stats.Members {
+		members = append(members, memberEntry{email, ms})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].stats.Net > members[j].stats.Net
+	})
+
+	for i, m := range members {
+		data.Members = append(data.Members, TeamMemberHTMLData{
+			Email:   m.email,
+			Added:   m.stats.Added,
+			Deleted: m.stats.Deleted,
+			Net:     m.stats.Net,
+			Commits: m.stats.Commits,
+			PerDay:  float64(m.stats.Net) / float64(workingDays),
+			IsTop:   i == 0,
+		})
+	}
+
+	tmpl, err := template.New("team").Parse(teamHtmlTemplate)
+	if err != nil {
+		return fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	if filename == "" {
+		filename = "gitrespect-team.html"
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer f.Close()
+
+	if err := tmpl.Execute(f, data); err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	fmt.Printf("✓ Report saved to %s\n", filename)
+	return nil
+}

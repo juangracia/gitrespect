@@ -13,6 +13,7 @@ import (
 
 var (
 	author    string
+	team      []string
 	since     string
 	until     string
 	breakdown string
@@ -34,6 +35,7 @@ lines added, deleted, net changes, and comparisons to industry benchmarks.`,
 
 func init() {
 	rootCmd.Flags().StringVarP(&author, "author", "a", "", "Filter by author email (default: git config user.email)")
+	rootCmd.Flags().StringSliceVarP(&team, "team", "t", nil, "Team mode: analyze multiple authors (comma-separated emails)")
 	rootCmd.Flags().StringVarP(&since, "since", "s", "30 days ago", "Start date (YYYY-MM-DD or relative like '30 days ago')")
 	rootCmd.Flags().StringVarP(&until, "until", "u", "", "End date (default: now)")
 	rootCmd.Flags().StringVarP(&breakdown, "breakdown", "b", "", "Show breakdown: monthly, weekly, or daily")
@@ -91,6 +93,11 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Check if team mode is enabled
+	if len(team) > 0 {
+		return runTeamAnalysis(paths, team, sinceTime, untilTime)
+	}
+
 	// Get author if not specified
 	authorEmail := author
 	if authorEmail == "" {
@@ -123,5 +130,48 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return report.HTML(combined, file, breakdown)
 	default:
 		return report.Terminal(combined, breakdown)
+	}
+}
+
+func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time.Time) error {
+	teamStats := git.TeamStats{
+		Since:   sinceTime,
+		Until:   untilTime,
+		Members: make(map[string]git.RepoStats),
+	}
+
+	// Analyze each team member
+	for _, member := range members {
+		var memberStats []git.RepoStats
+		for _, path := range paths {
+			stats, err := git.Analyze(path, member, sinceTime, untilTime)
+			if err != nil {
+				continue
+			}
+			memberStats = append(memberStats, stats)
+		}
+
+		if len(memberStats) > 0 {
+			combined := git.CombineStats(memberStats)
+			teamStats.Members[member] = combined
+			teamStats.TotalAdded += combined.Added
+			teamStats.TotalDeleted += combined.Deleted
+			teamStats.TotalNet += combined.Net
+			teamStats.TotalCommits += combined.Commits
+		}
+	}
+
+	if len(teamStats.Members) == 0 {
+		return fmt.Errorf("no team members could be analyzed")
+	}
+
+	// Generate output
+	switch output {
+	case "json":
+		return report.TeamJSON(teamStats, file)
+	case "html":
+		return report.TeamHTML(teamStats, file)
+	default:
+		return report.TeamTerminal(teamStats)
 	}
 }

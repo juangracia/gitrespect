@@ -142,6 +142,89 @@ func JSON(stats git.RepoStats, filename string, breakdown string) error {
 	return nil
 }
 
+type TeamJSONReport struct {
+	Period  PeriodInfo           `json:"period"`
+	Totals  TeamTotals           `json:"totals"`
+	Members []MemberStats        `json:"members"`
+}
+
+type TeamTotals struct {
+	Added   int     `json:"added"`
+	Deleted int     `json:"deleted"`
+	Net     int     `json:"net"`
+	Commits int     `json:"commits"`
+	PerDay  float64 `json:"per_day"`
+}
+
+type MemberStats struct {
+	Email   string  `json:"email"`
+	Added   int     `json:"added"`
+	Deleted int     `json:"deleted"`
+	Net     int     `json:"net"`
+	Commits int     `json:"commits"`
+	PerDay  float64 `json:"per_day"`
+}
+
+func TeamJSON(stats git.TeamStats, filename string) error {
+	workingDays := git.WorkingDays(stats.Since, stats.Until)
+
+	report := TeamJSONReport{
+		Period: PeriodInfo{
+			Since: stats.Since.Format("2006-01-02"),
+			Until: stats.Until.Format("2006-01-02"),
+			Days:  workingDays,
+		},
+		Totals: TeamTotals{
+			Added:   stats.TotalAdded,
+			Deleted: stats.TotalDeleted,
+			Net:     stats.TotalNet,
+			Commits: stats.TotalCommits,
+			PerDay:  float64(stats.TotalNet) / float64(workingDays),
+		},
+	}
+
+	// Add member stats sorted by net lines
+	type memberEntry struct {
+		email string
+		stats git.RepoStats
+	}
+	var members []memberEntry
+	for email, ms := range stats.Members {
+		members = append(members, memberEntry{email, ms})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].stats.Net > members[j].stats.Net
+	})
+
+	for _, m := range members {
+		report.Members = append(report.Members, MemberStats{
+			Email:   m.email,
+			Added:   m.stats.Added,
+			Deleted: m.stats.Deleted,
+			Net:     m.stats.Net,
+			Commits: m.stats.Commits,
+			PerDay:  float64(m.stats.Net) / float64(workingDays),
+		})
+	}
+
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	if filename != "" {
+		err = os.WriteFile(filename, data, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+		fmt.Printf("✓ Report saved to %s\n", filename)
+	} else {
+		fmt.Println(string(data))
+	}
+
+	return nil
+}
+
 func CompareJSON(comparison git.CompareStats, filename string) error {
 	beforeDays := git.WorkingDays(comparison.Before.Since, comparison.Before.Until)
 	afterDays := git.WorkingDays(comparison.After.Since, comparison.After.Until)

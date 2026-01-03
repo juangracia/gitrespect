@@ -37,6 +37,16 @@ type CompareStats struct {
 	AfterLabel  string
 }
 
+type TeamStats struct {
+	Since        time.Time
+	Until        time.Time
+	Members      map[string]RepoStats
+	TotalAdded   int
+	TotalDeleted int
+	TotalNet     int
+	TotalCommits int
+}
+
 func Analyze(repoPath, author string, since, until time.Time) (RepoStats, error) {
 	stats := RepoStats{
 		Path:    repoPath,
