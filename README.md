@@ -161,6 +161,12 @@ gitrespect uses `git log --numstat` to count lines added and deleted per commit,
 
 Contributions welcome! Please open an issue or submit a PR.
 
+## Author
+
+Created by [Juan Gracia](https://github.com/juangracia)
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) file.
+
+Use it freely, modify it, share it. No attribution required, but a star is always appreciated!
