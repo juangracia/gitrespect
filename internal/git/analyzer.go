@@ -2,7 +2,9 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -265,4 +267,46 @@ func WorkingDays(since, until time.Time) int {
 		workingDays = 1
 	}
 	return workingDays
+}
+
+// IsGitRepo checks if a path is a git repository
+func IsGitRepo(path string) bool {
+	gitDir := filepath.Join(path, ".git")
+	info, err := os.Stat(gitDir)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+// FindRepos finds all git repositories in a directory (one level deep)
+func FindRepos(path string) ([]string, error) {
+	var repos []string
+
+	// First check if the path itself is a git repo
+	if IsGitRepo(path) {
+		return []string{path}, nil
+	}
+
+	// Scan subdirectories for git repos
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		// Skip hidden directories (except we check for .git inside)
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		subPath := filepath.Join(path, entry.Name())
+		if IsGitRepo(subPath) {
+			repos = append(repos, subPath)
+		}
+	}
+
+	return repos, nil
 }

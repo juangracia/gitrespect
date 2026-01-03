@@ -60,13 +60,26 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		paths = []string{cwd}
 	}
 
-	// Resolve paths to absolute
-	for i, p := range paths {
+	// Resolve paths to absolute and find repos in directories
+	var resolvedPaths []string
+	for _, p := range paths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return fmt.Errorf("invalid path %s: %w", p, err)
 		}
-		paths[i] = abs
+		// Find git repos in this path (returns the path itself if it's a repo,
+		// or all repos in subdirectories if it's a directory containing repos)
+		repos, err := git.FindRepos(abs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to scan %s: %v\n", abs, err)
+			continue
+		}
+		resolvedPaths = append(resolvedPaths, repos...)
+	}
+	paths = resolvedPaths
+
+	if len(paths) == 0 {
+		return fmt.Errorf("no git repositories found")
 	}
 
 	// Parse dates
