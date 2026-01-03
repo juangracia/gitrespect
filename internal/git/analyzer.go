@@ -1,0 +1,258 @@
+package git
+
+import (
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type RepoStats struct {
+	Path         string
+	Author       string
+	Since        time.Time
+	Until        time.Time
+	Added        int
+	Deleted      int
+	Net          int
+	Commits      int
+	FilesChanged int
+	Monthly      map[string]MonthStats
+}
+
+type MonthStats struct {
+	Year    int
+	Month   int
+	Added   int
+	Deleted int
+	Net     int
+	Commits int
+}
+
+type CompareStats struct {
+	Before      RepoStats
+	After       RepoStats
+	BeforeLabel string
+	AfterLabel  string
+}
+
+func Analyze(repoPath, author string, since, until time.Time) (RepoStats, error) {
+	stats := RepoStats{
+		Path:    repoPath,
+		Author:  author,
+		Since:   since,
+		Until:   until,
+		Monthly: make(map[string]MonthStats),
+	}
+
+	// Build git log command
+	sinceStr := since.Format("2006-01-02")
+	untilStr := until.Format("2006-01-02")
+
+	// Get commit stats with numstat
+	args := []string{
+		"-C", repoPath,
+		"log",
+		"--author=" + author,
+		"--since=" + sinceStr,
+		"--until=" + untilStr,
+		"--pretty=format:%H|%ad",
+		"--date=short",
+		"--numstat",
+	}
+
+	cmd := exec.Command("git", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return stats, fmt.Errorf("git log failed: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	var currentDate string
+	var currentMonth string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Check if it's a commit header line
+		if strings.Contains(line, "|") {
+			parts := strings.Split(line, "|")
+			if len(parts) >= 2 {
+				currentDate = parts[1]
+				stats.Commits++
+
+				// Parse month
+				if len(currentDate) >= 7 {
+					currentMonth = currentDate[:7]
+				}
+			}
+			continue
+		}
+
+		// Parse numstat line: added\tdeleted\tfilename
+		fields := strings.Fields(line)
+		if len(fields) >= 3 {
+			// Skip binary files (shown as -)
+			if fields[0] == "-" || fields[1] == "-" {
+				continue
+			}
+
+			added, err1 := strconv.Atoi(fields[0])
+			deleted, err2 := strconv.Atoi(fields[1])
+
+			if err1 == nil && err2 == nil {
+				stats.Added += added
+				stats.Deleted += deleted
+				stats.FilesChanged++
+
+				// Update monthly stats
+				if currentMonth != "" {
+					m := stats.Monthly[currentMonth]
+					m.Added += added
+					m.Deleted += deleted
+					m.Net = m.Added - m.Deleted
+					m.Commits++
+
+					// Parse year and month
+					if len(currentMonth) >= 7 {
+						y, _ := strconv.Atoi(currentMonth[:4])
+						mo, _ := strconv.Atoi(currentMonth[5:7])
+						m.Year = y
+						m.Month = mo
+					}
+					stats.Monthly[currentMonth] = m
+				}
+			}
+		}
+	}
+
+	stats.Net = stats.Added - stats.Deleted
+
+	return stats, nil
+}
+
+func GetDefaultAuthor(repoPath string) (string, error) {
+	cmd := exec.Command("git", "-C", repoPath, "config", "user.email")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func ParseDate(dateStr string) (time.Time, error) {
+	// Try parsing as absolute date
+	formats := []string{
+		"2006-01-02",
+		"2006-01",
+		"2006",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t, nil
+		}
+	}
+
+	// Parse relative dates
+	dateStr = strings.ToLower(dateStr)
+
+	if strings.Contains(dateStr, "day") {
+		parts := strings.Fields(dateStr)
+		if len(parts) >= 2 {
+			n, err := strconv.Atoi(parts[0])
+			if err == nil {
+				return time.Now().AddDate(0, 0, -n), nil
+			}
+		}
+	}
+
+	if strings.Contains(dateStr, "week") {
+		parts := strings.Fields(dateStr)
+		if len(parts) >= 2 {
+			n, err := strconv.Atoi(parts[0])
+			if err == nil {
+				return time.Now().AddDate(0, 0, -n*7), nil
+			}
+		}
+	}
+
+	if strings.Contains(dateStr, "month") {
+		parts := strings.Fields(dateStr)
+		if len(parts) >= 2 {
+			n, err := strconv.Atoi(parts[0])
+			if err == nil {
+				return time.Now().AddDate(0, -n, 0), nil
+			}
+		}
+	}
+
+	if strings.Contains(dateStr, "year") {
+		parts := strings.Fields(dateStr)
+		if len(parts) >= 2 {
+			n, err := strconv.Atoi(parts[0])
+			if err == nil {
+				return time.Now().AddDate(-n, 0, 0), nil
+			}
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("could not parse date: %s", dateStr)
+}
+
+func CombineStats(stats []RepoStats) RepoStats {
+	if len(stats) == 0 {
+		return RepoStats{Monthly: make(map[string]MonthStats)}
+	}
+
+	combined := RepoStats{
+		Author:  stats[0].Author,
+		Since:   stats[0].Since,
+		Until:   stats[0].Until,
+		Monthly: make(map[string]MonthStats),
+	}
+
+	for _, s := range stats {
+		combined.Added += s.Added
+		combined.Deleted += s.Deleted
+		combined.Commits += s.Commits
+		combined.FilesChanged += s.FilesChanged
+
+		// Merge monthly stats
+		for month, m := range s.Monthly {
+			existing := combined.Monthly[month]
+			existing.Added += m.Added
+			existing.Deleted += m.Deleted
+			existing.Net = existing.Added - existing.Deleted
+			existing.Commits += m.Commits
+			existing.Year = m.Year
+			existing.Month = m.Month
+			combined.Monthly[month] = existing
+		}
+	}
+
+	combined.Net = combined.Added - combined.Deleted
+
+	if len(stats) > 1 {
+		combined.Path = fmt.Sprintf("%d repositories", len(stats))
+	} else {
+		combined.Path = stats[0].Path
+	}
+
+	return combined
+}
+
+// WorkingDays calculates approximate working days between two dates
+func WorkingDays(since, until time.Time) int {
+	days := int(until.Sub(since).Hours() / 24)
+	// Approximate: 5/7 of days are working days
+	workingDays := (days * 5) / 7
+	if workingDays < 1 {
+		workingDays = 1
+	}
+	return workingDays
+}
