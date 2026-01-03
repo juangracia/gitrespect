@@ -182,6 +182,14 @@ gitrespect /path/to/repo
 gitrespect ./api ./frontend ./gateway
 ```
 
+### Scan Directory for Repos
+
+Analyze all git repositories in a folder:
+
+```bash
+gitrespect -r ~/projects
+```
+
 ### Filter by Year
 
 ```bash
@@ -250,6 +258,7 @@ gitrespect [paths...] [flags]
 Flags:
   -a, --author string      Filter by author email (default: git config user.email)
   -t, --team strings       Team mode: analyze multiple authors (comma-separated emails)
+  -r, --recursive          Scan subdirectories for git repositories
   -s, --since string       Start date (YYYY-MM-DD or "30 days ago") (default: "30 days ago")
   -u, --until string       End date (default: now)
       --year int           Filter by year (e.g., --year=2025)

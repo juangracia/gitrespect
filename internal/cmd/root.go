@@ -21,6 +21,7 @@ var (
 	file      string
 	year      int
 	theme     string
+	recursive bool
 )
 
 var rootCmd = &cobra.Command{
@@ -44,6 +45,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&file, "file", "f", "", "Output file path (for html/json)")
 	rootCmd.Flags().IntVar(&year, "year", 0, "Filter by year (e.g., --year=2025)")
 	rootCmd.Flags().StringVar(&theme, "theme", "dark", "HTML theme: dark or light")
+	rootCmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Scan subdirectories for git repositories")
 }
 
 func Execute() error {
@@ -60,21 +62,25 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		paths = []string{cwd}
 	}
 
-	// Resolve paths to absolute and find repos in directories
+	// Resolve paths to absolute
 	var resolvedPaths []string
 	for _, p := range paths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return fmt.Errorf("invalid path %s: %w", p, err)
 		}
-		// Find git repos in this path (returns the path itself if it's a repo,
-		// or all repos in subdirectories if it's a directory containing repos)
-		repos, err := git.FindRepos(abs)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to scan %s: %v\n", abs, err)
-			continue
+
+		if recursive {
+			// Find git repos in subdirectories
+			repos, err := git.FindRepos(abs)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to scan %s: %v\n", abs, err)
+				continue
+			}
+			resolvedPaths = append(resolvedPaths, repos...)
+		} else {
+			resolvedPaths = append(resolvedPaths, abs)
 		}
-		resolvedPaths = append(resolvedPaths, repos...)
 	}
 	paths = resolvedPaths
 
