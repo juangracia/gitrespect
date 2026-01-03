@@ -28,6 +28,13 @@ The rise of AI coding assistants (Copilot, Claude, Cursor) is changing how we wr
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew tap juangracia/gitrespect
+brew install gitrespect
+```
+
 ### Using Go
 
 ```bash
@@ -37,6 +44,38 @@ go install github.com/juangracia/gitrespect@latest
 ### Download Binary
 
 Download the latest release from [GitHub Releases](https://github.com/juangracia/gitrespect/releases).
+
+#### macOS
+
+```bash
+# Apple Silicon (M1/M2/M3)
+curl -L https://github.com/juangracia/gitrespect/releases/latest/download/gitrespect-darwin-arm64.tar.gz | tar xz
+sudo mv gitrespect /usr/local/bin/
+
+# Intel Mac
+curl -L https://github.com/juangracia/gitrespect/releases/latest/download/gitrespect-darwin-amd64.tar.gz | tar xz
+sudo mv gitrespect /usr/local/bin/
+```
+
+#### Linux
+
+```bash
+# x86_64
+curl -L https://github.com/juangracia/gitrespect/releases/latest/download/gitrespect-linux-amd64.tar.gz | tar xz
+sudo mv gitrespect /usr/local/bin/
+
+# ARM64
+curl -L https://github.com/juangracia/gitrespect/releases/latest/download/gitrespect-linux-arm64.tar.gz | tar xz
+sudo mv gitrespect /usr/local/bin/
+```
+
+#### Windows
+
+```powershell
+# Download from GitHub Releases
+# Extract gitrespect-windows-amd64.zip
+# Add to PATH or move to a directory in your PATH
+```
 
 ### Build from Source
 
@@ -174,6 +213,24 @@ gitrespect --author="developer@example.com"
 gitrespect --year=2025 --breakdown=monthly --output=html --file=report.html
 ```
 
+### HTML Theme Options
+
+Choose between dark (default) and light themes:
+
+**Dark theme (default):**
+```bash
+gitrespect --output=html --theme=dark --file=report.html
+```
+
+![Dark Theme](screenshots/report-dark.png)
+
+**Light theme:**
+```bash
+gitrespect --output=html --theme=light --file=report.html
+```
+
+![Light Theme](screenshots/report-light.png)
+
 ### Export to JSON
 
 ```bash
@@ -200,6 +257,7 @@ Flags:
   -b, --breakdown string   Show breakdown: monthly, weekly, or daily
   -o, --output string      Output format: terminal, json, or html (default: terminal)
   -f, --file string        Output file path (for html/json)
+      --theme string       HTML theme: dark or light (default: dark)
   -h, --help               Show help
 
 Commands:

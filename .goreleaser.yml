@@ -1,0 +1,54 @@
+version: 2
+
+project_name: gitrespect
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    main: ./cmd/gitrespect
+    binary: gitrespect
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+brews:
+  - name: gitrespect
+    repository:
+      owner: juangracia
+      name: homebrew-gitrespect
+    homepage: "https://github.com/juangracia/gitrespect"
+    description: "Respect your git work with real metrics. Measure AI productivity impact."
+    license: "MIT"
+    folder: Formula
+    test: |
+      system "#{bin}/gitrespect", "version"
+    install: |
+      bin.install "gitrespect"

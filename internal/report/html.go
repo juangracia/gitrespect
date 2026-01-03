@@ -23,6 +23,8 @@ type HTMLData struct {
 	Benchmarks   []BenchmarkData
 	Monthly      []MonthlyHTMLData
 	HasMonthly   bool
+	Theme        string
+	IsDark       bool
 }
 
 type BenchmarkData struct {
@@ -52,6 +54,8 @@ type CompareHTMLData struct {
 	AfterPerDay   float64
 	Multiplier    float64
 	ChangeEmoji   string
+	Theme         string
+	IsDark        bool
 }
 
 const htmlTemplate = `<!DOCTYPE html>
@@ -62,6 +66,7 @@ const htmlTemplate = `<!DOCTYPE html>
     <title>gitrespect - {{.Author}}</title>
     <style>
         :root {
+            {{if .IsDark}}
             --bg-primary: #0d1117;
             --bg-secondary: #161b22;
             --bg-tertiary: #21262d;
@@ -73,6 +78,19 @@ const htmlTemplate = `<!DOCTYPE html>
             --accent-secondary: #238636;
             --success: #3fb950;
             --warning: #d29922;
+            {{else}}
+            --bg-primary: #ffffff;
+            --bg-secondary: #f6f8fa;
+            --bg-tertiary: #eaeef2;
+            --border: #d0d7de;
+            --text-primary: #1f2328;
+            --text-secondary: #656d76;
+            --text-muted: #8c959f;
+            --accent: #0969da;
+            --accent-secondary: #1a7f37;
+            --success: #1a7f37;
+            --warning: #9a6700;
+            {{end}}
         }
 
         * {
@@ -381,6 +399,7 @@ const compareHtmlTemplate = `<!DOCTYPE html>
     <title>gitrespect - Period Comparison</title>
     <style>
         :root {
+            {{if .IsDark}}
             --bg-primary: #0d1117;
             --bg-secondary: #161b22;
             --border: #30363d;
@@ -388,6 +407,15 @@ const compareHtmlTemplate = `<!DOCTYPE html>
             --text-secondary: #8b949e;
             --accent: #58a6ff;
             --success: #3fb950;
+            {{else}}
+            --bg-primary: #ffffff;
+            --bg-secondary: #f6f8fa;
+            --border: #d0d7de;
+            --text-primary: #1f2328;
+            --text-secondary: #656d76;
+            --accent: #0969da;
+            --success: #1a7f37;
+            {{end}}
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -521,9 +549,11 @@ const compareHtmlTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
-func HTML(stats git.RepoStats, filename string, breakdown string) error {
+func HTML(stats git.RepoStats, filename string, breakdown string, theme string) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.Net) / float64(workingDays)
+
+	isDark := theme != "light"
 
 	data := HTMLData{
 		Author:      stats.Author,
@@ -536,6 +566,8 @@ func HTML(stats git.RepoStats, filename string, breakdown string) error {
 		WorkingDays: workingDays,
 		PerDay:      locPerDay,
 		HasMonthly:  breakdown == "monthly" && len(stats.Monthly) > 0,
+		Theme:       theme,
+		IsDark:      isDark,
 	}
 
 	// Add benchmarks
@@ -603,7 +635,7 @@ func HTML(stats git.RepoStats, filename string, breakdown string) error {
 	return nil
 }
 
-func CompareHTML(comparison git.CompareStats, filename string) error {
+func CompareHTML(comparison git.CompareStats, filename string, theme string) error {
 	beforeDays := git.WorkingDays(comparison.Before.Since, comparison.Before.Until)
 	afterDays := git.WorkingDays(comparison.After.Since, comparison.After.Until)
 
@@ -619,6 +651,8 @@ func CompareHTML(comparison git.CompareStats, filename string) error {
 		emoji = "📈"
 	}
 
+	isDark := theme != "light"
+
 	data := CompareHTMLData{
 		BeforeLabel:  comparison.BeforeLabel,
 		AfterLabel:   comparison.AfterLabel,
@@ -630,6 +664,8 @@ func CompareHTML(comparison git.CompareStats, filename string) error {
 		AfterPerDay:  afterPerDay,
 		Multiplier:   multiplier,
 		ChangeEmoji:  emoji,
+		Theme:        theme,
+		IsDark:       isDark,
 	}
 
 	tmpl, err := template.New("compare").Parse(compareHtmlTemplate)
@@ -665,6 +701,8 @@ type TeamHTMLData struct {
 	WorkingDays  int
 	PerDay       float64
 	Members      []TeamMemberHTMLData
+	Theme        string
+	IsDark       bool
 }
 
 type TeamMemberHTMLData struct {
@@ -685,6 +723,7 @@ const teamHtmlTemplate = `<!DOCTYPE html>
     <title>gitrespect - Team Report</title>
     <style>
         :root {
+            {{if .IsDark}}
             --bg-primary: #0d1117;
             --bg-secondary: #161b22;
             --bg-tertiary: #21262d;
@@ -695,6 +734,18 @@ const teamHtmlTemplate = `<!DOCTYPE html>
             --accent: #58a6ff;
             --success: #3fb950;
             --warning: #d29922;
+            {{else}}
+            --bg-primary: #ffffff;
+            --bg-secondary: #f6f8fa;
+            --bg-tertiary: #eaeef2;
+            --border: #d0d7de;
+            --text-primary: #1f2328;
+            --text-secondary: #656d76;
+            --text-muted: #8c959f;
+            --accent: #0969da;
+            --success: #1a7f37;
+            --warning: #9a6700;
+            {{end}}
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -779,8 +830,10 @@ const teamHtmlTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
-func TeamHTML(stats git.TeamStats, filename string) error {
+func TeamHTML(stats git.TeamStats, filename string, theme string) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
+
+	isDark := theme != "light"
 
 	data := TeamHTMLData{
 		Since:        stats.Since.Format("Jan 2, 2006"),
@@ -791,6 +844,8 @@ func TeamHTML(stats git.TeamStats, filename string) error {
 		TotalCommits: stats.TotalCommits,
 		WorkingDays:  workingDays,
 		PerDay:       float64(stats.TotalNet) / float64(workingDays),
+		Theme:        theme,
+		IsDark:       isDark,
 	}
 
 	// Sort members by net lines descending

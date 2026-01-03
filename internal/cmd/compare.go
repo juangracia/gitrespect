@@ -36,6 +36,7 @@ func init() {
 	compareCmd.Flags().StringVarP(&author, "author", "a", "", "Filter by author email")
 	compareCmd.Flags().StringVarP(&output, "output", "o", "terminal", "Output format: terminal, json, or html")
 	compareCmd.Flags().StringVarP(&file, "file", "f", "", "Output file path")
+	compareCmd.Flags().StringVar(&theme, "theme", "dark", "HTML theme: dark or light")
 
 	compareCmd.MarkFlagRequired("before")
 	compareCmd.MarkFlagRequired("after")
@@ -134,7 +135,7 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	case "json":
 		return report.CompareJSON(comparison, file)
 	case "html":
-		return report.CompareHTML(comparison, file)
+		return report.CompareHTML(comparison, file, theme)
 	default:
 		return report.CompareTerminal(comparison)
 	}

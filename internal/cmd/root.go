@@ -20,6 +20,7 @@ var (
 	output    string
 	file      string
 	year      int
+	theme     string
 )
 
 var rootCmd = &cobra.Command{
@@ -42,6 +43,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&output, "output", "o", "terminal", "Output format: terminal, json, or html")
 	rootCmd.Flags().StringVarP(&file, "file", "f", "", "Output file path (for html/json)")
 	rootCmd.Flags().IntVar(&year, "year", 0, "Filter by year (e.g., --year=2025)")
+	rootCmd.Flags().StringVar(&theme, "theme", "dark", "HTML theme: dark or light")
 }
 
 func Execute() error {
@@ -127,7 +129,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	case "json":
 		return report.JSON(combined, file, breakdown)
 	case "html":
-		return report.HTML(combined, file, breakdown)
+		return report.HTML(combined, file, breakdown, theme)
 	default:
 		return report.Terminal(combined, breakdown)
 	}
@@ -170,7 +172,7 @@ func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time
 	case "json":
 		return report.TeamJSON(teamStats, file)
 	case "html":
-		return report.TeamHTML(teamStats, file)
+		return report.TeamHTML(teamStats, file, theme)
 	default:
 		return report.TeamTerminal(teamStats)
 	}
