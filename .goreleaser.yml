@@ -44,10 +44,10 @@ brews:
     repository:
       owner: juangracia
       name: homebrew-gitrespect
+      directory: Formula
     homepage: "https://github.com/juangracia/gitrespect"
     description: "Respect your git work with real metrics. Measure AI productivity impact."
     license: "MIT"
-    folder: Formula
     test: |
       system "#{bin}/gitrespect", "version"
     install: |
