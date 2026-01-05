@@ -279,7 +279,7 @@ func IsGitRepo(path string) bool {
 	return info.IsDir()
 }
 
-// FindRepos finds all git repositories in a directory (one level deep)
+// FindRepos finds all git repositories in a directory (recursively)
 func FindRepos(path string) ([]string, error) {
 	var repos []string
 
@@ -288,24 +288,31 @@ func FindRepos(path string) ([]string, error) {
 		return []string{path}, nil
 	}
 
-	// Scan subdirectories for git repos
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read directory: %w", err)
-	}
+	// Recursively scan for git repos
+	err := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // Skip directories we can't access
+		}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if !d.IsDir() {
+			return nil
 		}
-		// Skip hidden directories (except we check for .git inside)
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
+
+		// Skip hidden directories
+		if strings.HasPrefix(d.Name(), ".") && p != path {
+			return filepath.SkipDir
 		}
-		subPath := filepath.Join(path, entry.Name())
-		if IsGitRepo(subPath) {
-			repos = append(repos, subPath)
+
+		if IsGitRepo(p) {
+			repos = append(repos, p)
+			return filepath.SkipDir // Don't recurse into git repos
 		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan directory: %w", err)
 	}
 
 	return repos, nil
