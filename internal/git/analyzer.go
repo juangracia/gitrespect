@@ -283,12 +283,7 @@ func IsGitRepo(path string) bool {
 func FindRepos(path string) ([]string, error) {
 	var repos []string
 
-	// First check if the path itself is a git repo
-	if IsGitRepo(path) {
-		return []string{path}, nil
-	}
-
-	// Recursively scan for git repos
+	// Recursively scan for git repos (including immediate subdirectories)
 	err := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip directories we can't access
@@ -298,14 +293,22 @@ func FindRepos(path string) ([]string, error) {
 			return nil
 		}
 
-		// Skip hidden directories
+		// Skip hidden directories (except .git check happens via IsGitRepo)
 		if strings.HasPrefix(d.Name(), ".") && p != path {
 			return filepath.SkipDir
 		}
 
 		if IsGitRepo(p) {
-			repos = append(repos, p)
-			return filepath.SkipDir // Don't recurse into git repos
+			// Only add if it has commits (valid working repo)
+			if hasCommits(p) {
+				repos = append(repos, p)
+				return filepath.SkipDir // Don't recurse into valid git repos
+			}
+			// Invalid/empty git repo at root - continue scanning subdirectories
+			if p == path {
+				return nil
+			}
+			return filepath.SkipDir
 		}
 
 		return nil
@@ -316,4 +319,11 @@ func FindRepos(path string) ([]string, error) {
 	}
 
 	return repos, nil
+}
+
+// hasCommits checks if a git repo has at least one commit
+func hasCommits(repoPath string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "HEAD")
+	err := cmd.Run()
+	return err == nil
 }
