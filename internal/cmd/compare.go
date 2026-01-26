@@ -37,6 +37,7 @@ func init() {
 	compareCmd.Flags().StringVarP(&output, "output", "o", "terminal", "Output format: terminal, json, or html")
 	compareCmd.Flags().StringVarP(&file, "file", "f", "", "Output file path")
 	compareCmd.Flags().StringVar(&theme, "theme", "dark", "HTML theme: dark or light")
+	compareCmd.Flags().StringSliceVarP(&exclude, "exclude", "e", nil, "Exclude files matching glob patterns")
 
 	compareCmd.MarkFlagRequired("before")
 	compareCmd.MarkFlagRequired("after")
@@ -103,14 +104,14 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	var beforeStats, afterStats []git.RepoStats
 
 	for _, path := range paths {
-		bStats, err := git.Analyze(path, authorEmail, beforeStart, beforeEnd)
+		bStats, err := git.Analyze(path, authorEmail, beforeStart, beforeEnd, exclude)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to analyze %s: %v\n", path, err)
 			continue
 		}
 		beforeStats = append(beforeStats, bStats)
 
-		aStats, err := git.Analyze(path, authorEmail, afterStart, afterEnd)
+		aStats, err := git.Analyze(path, authorEmail, afterStart, afterEnd, exclude)
 		if err != nil {
 			continue
 		}

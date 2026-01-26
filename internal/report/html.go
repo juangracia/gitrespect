@@ -550,7 +550,7 @@ const compareHtmlTemplate = `<!DOCTYPE html>
 </html>`
 
 func HTML(stats git.RepoStats, filename string, breakdown string, theme string) error {
-	workingDays := git.WorkingDays(stats.Since, stats.Until)
+	workingDays := git.ActiveWorkingDays(stats)
 	locPerDay := float64(stats.Net) / float64(workingDays)
 
 	isDark := theme != "light"

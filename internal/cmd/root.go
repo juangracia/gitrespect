@@ -22,6 +22,8 @@ var (
 	year      int
 	theme     string
 	recursive bool
+	perRepo   bool
+	exclude   []string
 )
 
 var rootCmd = &cobra.Command{
@@ -46,6 +48,8 @@ func init() {
 	rootCmd.Flags().IntVar(&year, "year", 0, "Filter by year (e.g., --year=2025)")
 	rootCmd.Flags().StringVar(&theme, "theme", "dark", "HTML theme: dark or light")
 	rootCmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Scan subdirectories for git repositories")
+	rootCmd.Flags().BoolVar(&perRepo, "per-repo", false, "Show breakdown by repository when analyzing multiple repos")
+	rootCmd.Flags().StringSliceVarP(&exclude, "exclude", "e", nil, "Exclude files matching glob patterns (e.g., -e 'vendor/*' -e '*.generated.go')")
 }
 
 func Execute() error {
@@ -128,7 +132,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	// Analyze repositories
 	var allStats []git.RepoStats
 	for _, path := range paths {
-		stats, err := git.Analyze(path, authorEmail, sinceTime, untilTime)
+		stats, err := git.Analyze(path, authorEmail, sinceTime, untilTime, exclude)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to analyze %s: %v\n", path, err)
 			continue
@@ -150,6 +154,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	case "html":
 		return report.HTML(combined, file, breakdown, theme)
 	default:
+		if perRepo && len(allStats) > 1 {
+			return report.TerminalWithRepos(combined, allStats, breakdown)
+		}
 		return report.Terminal(combined, breakdown)
 	}
 }
@@ -165,7 +172,7 @@ func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time
 	for _, member := range members {
 		var memberStats []git.RepoStats
 		for _, path := range paths {
-			stats, err := git.Analyze(path, member, sinceTime, untilTime)
+			stats, err := git.Analyze(path, member, sinceTime, untilTime, exclude)
 			if err != nil {
 				continue
 			}

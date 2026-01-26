@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/juangracia/gitrespect/internal/benchmark"
 	"github.com/juangracia/gitrespect/internal/git"
@@ -20,7 +21,8 @@ const (
 )
 
 func Terminal(stats git.RepoStats, breakdown string) error {
-	workingDays := git.WorkingDays(stats.Since, stats.Until)
+	// Use active working days (based on actual commit span) for accurate daily average
+	workingDays := git.ActiveWorkingDays(stats)
 	locPerDay := float64(stats.Net) / float64(workingDays)
 
 	// Header
@@ -48,22 +50,35 @@ func Terminal(stats git.RepoStats, breakdown string) error {
 		stats.Commits)
 	fmt.Println()
 
-	// Daily average
-	fmt.Printf("  %sDaily avg:%s %.0f lines/day (%d working days)\n",
-		colorDim, colorReset, locPerDay, workingDays)
+	// Daily average - show actual activity period if different from date range
+	if !stats.FirstCommit.IsZero() && !stats.LastCommit.IsZero() {
+		activityRange := fmt.Sprintf("%s to %s", stats.FirstCommit.Format("Jan 2 2006"), stats.LastCommit.Format("Jan 2 2006"))
+		fmt.Printf("  %sDaily avg:%s %.0f lines/day (%d working days)\n",
+			colorDim, colorReset, locPerDay, workingDays)
+		fmt.Printf("  %sActivity:%s  %s\n", colorDim, colorReset, activityRange)
+	} else {
+		fmt.Printf("  %sDaily avg:%s %.0f lines/day (%d working days)\n",
+			colorDim, colorReset, locPerDay, workingDays)
+	}
 	fmt.Println()
 
-	// Industry comparison
-	comparisons := benchmark.Compare(locPerDay)
-	fmt.Printf("  %svs Industry:%s\n", colorDim, colorReset)
-	for i, c := range comparisons {
-		prefix := "├──"
-		if i == len(comparisons)-1 {
-			prefix = "└──"
+	// Industry comparison - only show for periods >= 30 days
+	if workingDays >= 21 { // ~30 calendar days = ~21 working days
+		comparisons := benchmark.Compare(locPerDay)
+		fmt.Printf("  %svs Industry:%s\n", colorDim, colorReset)
+		for i, c := range comparisons {
+			prefix := "├──"
+			if i == len(comparisons)-1 {
+				prefix = "└──"
+			}
+			bar := renderBar(c.Multiplier, 20)
+			fmt.Printf("  %s %s (%d/day): %s%.1fx%s %s\n",
+				prefix, c.Label, c.Benchmark, colorYellow, c.Multiplier, colorReset, bar)
 		}
-		bar := renderBar(c.Multiplier, 20)
-		fmt.Printf("  %s %s (%d/day): %s%.1fx%s %s\n",
-			prefix, c.Label, c.Benchmark, colorYellow, c.Multiplier, colorReset, bar)
+	} else {
+		// For shorter periods, show pace instead
+		fmt.Printf("  %sPace:%s %.0f lines/day\n", colorDim, colorReset, locPerDay)
+		fmt.Printf("  %s(Industry comparison requires 30+ days of activity)%s\n", colorDim, colorReset)
 	}
 	fmt.Println()
 
@@ -71,6 +86,48 @@ func Terminal(stats git.RepoStats, breakdown string) error {
 	if breakdown == "monthly" && len(stats.Monthly) > 0 {
 		printMonthlyBreakdown(stats)
 	}
+
+	return nil
+}
+
+func TerminalWithRepos(combined git.RepoStats, repos []git.RepoStats, breakdown string) error {
+	// Print combined stats first
+	if err := Terminal(combined, breakdown); err != nil {
+		return err
+	}
+
+	// Print per-repo breakdown
+	fmt.Printf("  %sRepository Breakdown:%s\n", colorBold, colorReset)
+	fmt.Println("  " + strings.Repeat("─", 56))
+	fmt.Printf("  %sRepository%s                          %sNet%s       %sCommits%s\n",
+		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+	fmt.Println("  " + strings.Repeat("─", 56))
+
+	// Sort repos by net lines descending
+	sorted := make([]git.RepoStats, len(repos))
+	copy(sorted, repos)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Net > sorted[j].Net
+	})
+
+	for _, repo := range sorted {
+		if repo.Commits == 0 {
+			continue // Skip repos with no commits
+		}
+		repoName := filepath.Base(repo.Path)
+		if len(repoName) > 34 {
+			repoName = repoName[:31] + "..."
+		}
+		netColor := colorCyan
+		if repo.Net < 0 {
+			netColor = colorYellow
+		}
+		fmt.Printf("  %-36s %s%-10s%s %-8d\n",
+			repoName,
+			netColor, formatNumber(repo.Net), colorReset,
+			repo.Commits)
+	}
+	fmt.Println()
 
 	return nil
 }
@@ -197,7 +254,27 @@ func getChangeEmoji(multiplier float64) string {
 }
 
 func TeamTerminal(stats git.TeamStats) error {
-	workingDays := git.WorkingDays(stats.Since, stats.Until)
+	// Calculate working days from combined member activity
+	var firstCommit, lastCommit time.Time
+	for _, m := range stats.Members {
+		if !m.FirstCommit.IsZero() {
+			if firstCommit.IsZero() || m.FirstCommit.Before(firstCommit) {
+				firstCommit = m.FirstCommit
+			}
+		}
+		if !m.LastCommit.IsZero() {
+			if lastCommit.IsZero() || m.LastCommit.After(lastCommit) {
+				lastCommit = m.LastCommit
+			}
+		}
+	}
+
+	var workingDays int
+	if !firstCommit.IsZero() && !lastCommit.IsZero() {
+		workingDays = git.WorkingDays(firstCommit, lastCommit)
+	} else {
+		workingDays = git.WorkingDays(stats.Since, stats.Until)
+	}
 	locPerDay := float64(stats.TotalNet) / float64(workingDays)
 
 	dateRange := fmt.Sprintf("%s to %s", stats.Since.Format("Jan 2 2006"), stats.Until.Format("Jan 2 2006"))

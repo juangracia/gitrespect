@@ -19,7 +19,7 @@ builds:
     main: ./cmd/gitrespect
     binary: gitrespect
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w -X github.com/juangracia/gitrespect/internal/cmd.Version={{.Version}} -X github.com/juangracia/gitrespect/internal/cmd.Commit={{.ShortCommit}} -X github.com/juangracia/gitrespect/internal/cmd.Date={{.Date}}
 
 archives:
   - format: tar.gz

@@ -15,6 +15,8 @@ type RepoStats struct {
 	Author       string
 	Since        time.Time
 	Until        time.Time
+	FirstCommit  time.Time // Actual first commit date in range
+	LastCommit   time.Time // Actual last commit date in range
 	Added        int
 	Deleted      int
 	Net          int
@@ -49,7 +51,7 @@ type TeamStats struct {
 	TotalCommits int
 }
 
-func Analyze(repoPath, author string, since, until time.Time) (RepoStats, error) {
+func Analyze(repoPath, author string, since, until time.Time, excludePatterns []string) (RepoStats, error) {
 	stats := RepoStats{
 		Path:    repoPath,
 		Author:  author,
@@ -97,6 +99,16 @@ func Analyze(repoPath, author string, since, until time.Time) (RepoStats, error)
 				currentDate = parts[1]
 				stats.Commits++
 
+				// Track first and last commit dates
+				if commitDate, err := time.Parse("2006-01-02", currentDate); err == nil {
+					if stats.FirstCommit.IsZero() || commitDate.Before(stats.FirstCommit) {
+						stats.FirstCommit = commitDate
+					}
+					if stats.LastCommit.IsZero() || commitDate.After(stats.LastCommit) {
+						stats.LastCommit = commitDate
+					}
+				}
+
 				// Parse month
 				if len(currentDate) >= 7 {
 					currentMonth = currentDate[:7]
@@ -110,6 +122,12 @@ func Analyze(repoPath, author string, since, until time.Time) (RepoStats, error)
 		if len(fields) >= 3 {
 			// Skip binary files (shown as -)
 			if fields[0] == "-" || fields[1] == "-" {
+				continue
+			}
+
+			// Check if file matches any exclude pattern
+			filename := strings.Join(fields[2:], " ") // Handle filenames with spaces
+			if shouldExclude(filename, excludePatterns) {
 				continue
 			}
 
@@ -234,6 +252,18 @@ func CombineStats(stats []RepoStats) RepoStats {
 		combined.Commits += s.Commits
 		combined.FilesChanged += s.FilesChanged
 
+		// Track earliest first commit and latest last commit
+		if !s.FirstCommit.IsZero() {
+			if combined.FirstCommit.IsZero() || s.FirstCommit.Before(combined.FirstCommit) {
+				combined.FirstCommit = s.FirstCommit
+			}
+		}
+		if !s.LastCommit.IsZero() {
+			if combined.LastCommit.IsZero() || s.LastCommit.After(combined.LastCommit) {
+				combined.LastCommit = s.LastCommit
+			}
+		}
+
 		// Merge monthly stats
 		for month, m := range s.Monthly {
 			existing := combined.Monthly[month]
@@ -267,6 +297,43 @@ func WorkingDays(since, until time.Time) int {
 		workingDays = 1
 	}
 	return workingDays
+}
+
+// ActiveWorkingDays calculates working days based on actual commit activity span.
+// If no commits exist, falls back to the provided date range.
+func ActiveWorkingDays(stats RepoStats) int {
+	if stats.FirstCommit.IsZero() || stats.LastCommit.IsZero() {
+		return WorkingDays(stats.Since, stats.Until)
+	}
+	return WorkingDays(stats.FirstCommit, stats.LastCommit)
+}
+
+// shouldExclude checks if a filename matches any of the exclude patterns
+func shouldExclude(filename string, patterns []string) bool {
+	for _, pattern := range patterns {
+		// Try matching the full path
+		if matched, _ := filepath.Match(pattern, filename); matched {
+			return true
+		}
+		// Also try matching just the base name
+		if matched, _ := filepath.Match(pattern, filepath.Base(filename)); matched {
+			return true
+		}
+		// Handle directory patterns (e.g., "vendor/*")
+		if strings.Contains(pattern, "/") {
+			// Check if filename starts with the directory prefix
+			parts := strings.SplitN(pattern, "/", 2)
+			if len(parts) == 2 && strings.HasPrefix(filename, parts[0]+"/") {
+				if parts[1] == "*" {
+					return true
+				}
+				if matched, _ := filepath.Match(parts[1], filename[len(parts[0])+1:]); matched {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // IsGitRepo checks if a path is a git repository
