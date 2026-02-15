@@ -21,8 +21,8 @@ const (
 )
 
 func Terminal(stats git.RepoStats, breakdown string) error {
-	// Use active working days (based on actual commit span) for accurate daily average
-	workingDays := git.ActiveWorkingDays(stats)
+	// Use full date range for daily average (not just active commit span)
+	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.Net) / float64(workingDays)
 
 	// Header

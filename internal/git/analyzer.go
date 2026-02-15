@@ -299,15 +299,6 @@ func WorkingDays(since, until time.Time) int {
 	return workingDays
 }
 
-// ActiveWorkingDays calculates working days based on actual commit activity span.
-// If no commits exist, falls back to the provided date range.
-func ActiveWorkingDays(stats RepoStats) int {
-	if stats.FirstCommit.IsZero() || stats.LastCommit.IsZero() {
-		return WorkingDays(stats.Since, stats.Until)
-	}
-	return WorkingDays(stats.FirstCommit, stats.LastCommit)
-}
-
 // shouldExclude checks if a filename matches any of the exclude patterns
 func shouldExclude(filename string, patterns []string) bool {
 	for _, pattern := range patterns {

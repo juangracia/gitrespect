@@ -69,7 +69,7 @@ type PeriodStats struct {
 }
 
 func JSON(stats git.RepoStats, filename string, breakdown string) error {
-	workingDays := git.ActiveWorkingDays(stats)
+	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.Net) / float64(workingDays)
 
 	report := JSONReport{
