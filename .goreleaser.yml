@@ -28,6 +28,9 @@ archives:
       - goos: windows
         format: zip
 
+release:
+  mode: replace
+
 checksum:
   name_template: 'checksums.txt'
 
