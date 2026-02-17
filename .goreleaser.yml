@@ -47,6 +47,7 @@ brews:
     repository:
       owner: juangracia
       name: homebrew-gitrespect
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
     homepage: "https://github.com/juangracia/gitrespect"
     description: "Respect your git work with real metrics. Measure AI productivity impact."
