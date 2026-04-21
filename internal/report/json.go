@@ -8,15 +8,25 @@ import (
 
 	"github.com/juangracia/gitrespect/internal/benchmark"
 	"github.com/juangracia/gitrespect/internal/git"
+	"github.com/juangracia/gitrespect/internal/metrics"
 )
 
 type JSONReport struct {
-	Author       string               `json:"author"`
-	Period       PeriodInfo           `json:"period"`
-	Summary      SummaryStats         `json:"summary"`
-	Daily        DailyStats           `json:"daily"`
-	Benchmarks   []BenchmarkResult    `json:"benchmarks"`
-	Monthly      []MonthlyJSONStats   `json:"monthly,omitempty"`
+	Author     string             `json:"author"`
+	Period     PeriodInfo         `json:"period"`
+	Summary    SummaryStats       `json:"summary"`
+	Daily      DailyStats         `json:"daily"`
+	Benchmarks []BenchmarkResult  `json:"benchmarks,omitempty"`
+	Metrics    *MetricsPayload    `json:"metrics,omitempty"`
+	Monthly    []MonthlyJSONStats `json:"monthly,omitempty"`
+}
+
+type MetricsPayload struct {
+	Baseline   *metrics.Baseline               `json:"baseline,omitempty"`
+	CommitSize *metrics.CommitSizeDistribution `json:"commit_size,omitempty"`
+	Cadence    *metrics.Cadence                `json:"cadence,omitempty"`
+	LeadTime   *metrics.LeadTime               `json:"lead_time,omitempty"`
+	Churn      *metrics.Churn                  `json:"churn,omitempty"`
 }
 
 type PeriodInfo struct {
@@ -68,7 +78,7 @@ type PeriodStats struct {
 	PerDay      float64 `json:"per_day"`
 }
 
-func JSON(stats git.RepoStats, filename string, breakdown string) error {
+func JSON(stats git.RepoStats, filename string, breakdown string, bundle metrics.Bundle) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.Net) / float64(workingDays)
 
@@ -93,14 +103,27 @@ func JSON(stats git.RepoStats, filename string, breakdown string) error {
 		},
 	}
 
-	// Add benchmarks
-	comparisons := benchmark.Compare(locPerDay)
-	for _, c := range comparisons {
-		report.Benchmarks = append(report.Benchmarks, BenchmarkResult{
-			Label:      c.Label,
-			Benchmark:  c.Benchmark,
-			Multiplier: c.Multiplier,
-		})
+	// Legacy benchmarks only when explicitly requested
+	if bundle.LegacyBenchmark {
+		comparisons := benchmark.Compare(locPerDay)
+		for _, c := range comparisons {
+			report.Benchmarks = append(report.Benchmarks, BenchmarkResult{
+				Label:      c.Label,
+				Benchmark:  c.Benchmark,
+				Multiplier: c.Multiplier,
+			})
+		}
+	}
+
+	// New metrics payload
+	if bundle.Baseline != nil || bundle.CommitSize != nil || bundle.Cadence != nil || bundle.LeadTime != nil || bundle.Churn != nil {
+		report.Metrics = &MetricsPayload{
+			Baseline:   bundle.Baseline,
+			CommitSize: bundle.CommitSize,
+			Cadence:    bundle.Cadence,
+			LeadTime:   bundle.LeadTime,
+			Churn:      bundle.Churn,
+		}
 	}
 
 	// Add monthly if requested
@@ -143,9 +166,9 @@ func JSON(stats git.RepoStats, filename string, breakdown string) error {
 }
 
 type TeamJSONReport struct {
-	Period  PeriodInfo           `json:"period"`
-	Totals  TeamTotals           `json:"totals"`
-	Members []MemberStats        `json:"members"`
+	Period  PeriodInfo    `json:"period"`
+	Totals  TeamTotals    `json:"totals"`
+	Members []MemberStats `json:"members"`
 }
 
 type TeamTotals struct {

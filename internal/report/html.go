@@ -11,20 +11,20 @@ import (
 )
 
 type HTMLData struct {
-	Author       string
-	Since        string
-	Until        string
-	Added        int
-	Deleted      int
-	Net          int
-	Commits      int
-	WorkingDays  int
-	PerDay       float64
-	Benchmarks   []BenchmarkData
-	Monthly      []MonthlyHTMLData
-	HasMonthly   bool
-	Theme        string
-	IsDark       bool
+	Author      string
+	Since       string
+	Until       string
+	Added       int
+	Deleted     int
+	Net         int
+	Commits     int
+	WorkingDays int
+	PerDay      float64
+	Benchmarks  []BenchmarkData
+	Monthly     []MonthlyHTMLData
+	HasMonthly  bool
+	Theme       string
+	IsDark      bool
 }
 
 type BenchmarkData struct {
@@ -44,18 +44,18 @@ type MonthlyHTMLData struct {
 }
 
 type CompareHTMLData struct {
-	BeforeLabel   string
-	AfterLabel    string
-	BeforeNet     int
-	AfterNet      int
-	BeforeDays    int
-	AfterDays     int
-	BeforePerDay  float64
-	AfterPerDay   float64
-	Multiplier    float64
-	ChangeEmoji   string
-	Theme         string
-	IsDark        bool
+	BeforeLabel  string
+	AfterLabel   string
+	BeforeNet    int
+	AfterNet     int
+	BeforeDays   int
+	AfterDays    int
+	BeforePerDay float64
+	AfterPerDay  float64
+	Multiplier   float64
+	ChangeEmoji  string
+	Theme        string
+	IsDark       bool
 }
 
 const htmlTemplate = `<!DOCTYPE html>

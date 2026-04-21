@@ -4,26 +4,33 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/juangracia/gitrespect/internal/git"
+	"github.com/juangracia/gitrespect/internal/metrics"
 	"github.com/juangracia/gitrespect/internal/report"
 	"github.com/spf13/cobra"
 )
 
 var (
-	author    string
-	team      []string
-	since     string
-	until     string
-	breakdown string
-	output    string
-	file      string
-	year      int
-	theme     string
-	recursive bool
-	perRepo   bool
-	exclude   []string
+	author          string
+	team            []string
+	since           string
+	until           string
+	breakdown       string
+	output          string
+	file            string
+	year            int
+	theme           string
+	recursive       bool
+	perRepo         bool
+	exclude         []string
+	metricsFlag     string
+	baselineWindow  string
+	churnWindow     string
+	legacyBenchmark bool
 )
 
 var rootCmd = &cobra.Command{
@@ -50,6 +57,34 @@ func init() {
 	rootCmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Scan subdirectories for git repositories")
 	rootCmd.Flags().BoolVar(&perRepo, "per-repo", false, "Show breakdown by repository when analyzing multiple repos")
 	rootCmd.Flags().StringSliceVarP(&exclude, "exclude", "e", nil, "Exclude files matching glob patterns (e.g., -e 'vendor/*' -e '*.generated.go')")
+	rootCmd.Flags().StringVar(&metricsFlag, "metrics", "", "Opt-in metrics: comma list of churn,lead-time,commit-size,cadence, or 'all'")
+	rootCmd.Flags().StringVar(&baselineWindow, "baseline-window", "90d", "Personal baseline window (e.g. 30d, 90d, 6m, 1y)")
+	rootCmd.Flags().StringVar(&churnWindow, "churn-window", "30d", "Churn detection window")
+	rootCmd.Flags().BoolVar(&legacyBenchmark, "legacy-benchmark", false, "Show deprecated Senior/Avg/Junior comparison instead of personal baseline")
+}
+
+func parseWindow(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 2 {
+		return 0, fmt.Errorf("invalid window %q (examples: 30d, 90d, 6m, 1y)", raw)
+	}
+	unit := raw[len(raw)-1]
+	n, err := strconv.Atoi(raw[:len(raw)-1])
+	if err != nil {
+		return 0, fmt.Errorf("invalid window %q: %w", raw, err)
+	}
+	switch unit {
+	case 'd':
+		return time.Duration(n) * 24 * time.Hour, nil
+	case 'w':
+		return time.Duration(n) * 7 * 24 * time.Hour, nil
+	case 'm':
+		return time.Duration(n) * 30 * 24 * time.Hour, nil
+	case 'y':
+		return time.Duration(n) * 365 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("unknown unit %q in %q (use d/w/m/y)", string(unit), raw)
+	}
 }
 
 func Execute() error {
@@ -147,17 +182,74 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	// Aggregate stats
 	combined := git.CombineStats(allStats)
 
+	// Parse metric options
+	selection, err := metrics.ParseSelection(metricsFlag)
+	if err != nil {
+		return err
+	}
+	bWindow, err := parseWindow(baselineWindow)
+	if err != nil {
+		return fmt.Errorf("invalid --baseline-window: %w", err)
+	}
+	cWindow, err := parseWindow(churnWindow)
+	if err != nil {
+		return fmt.Errorf("invalid --churn-window: %w", err)
+	}
+
+	bundle := metrics.Bundle{Selection: selection, LegacyBenchmark: legacyBenchmark}
+
+	// Compute baseline and opt-in metrics. v1 limitation: only runs on paths[0]
+	// when analyzing multiple repos; emit a warning in that case.
+	if len(paths) > 1 && (!legacyBenchmark || selection.Any()) {
+		fmt.Fprintln(os.Stderr, "note: baseline and opt-in metrics computed from the first repo only")
+	}
+	primaryPath := paths[0]
+
+	if !legacyBenchmark {
+		baseline, err := metrics.ComputeBaseline(primaryPath, authorEmail, sinceTime, bWindow, exclude)
+		if err == nil {
+			wd := git.WorkingDays(sinceTime, untilTime)
+			var locPerDay float64
+			if wd > 0 {
+				locPerDay = float64(combined.Net) / float64(wd)
+			}
+			baseline.SetPeriod(locPerDay)
+			bundle.Baseline = &baseline
+		}
+	}
+
+	if selection.CommitSize {
+		if d, err := metrics.ComputeCommitSize(primaryPath, authorEmail, sinceTime, untilTime, exclude); err == nil {
+			bundle.CommitSize = &d
+		}
+	}
+	if selection.Cadence {
+		if c, err := metrics.ComputeCadence(primaryPath, authorEmail, sinceTime, untilTime); err == nil {
+			bundle.Cadence = &c
+		}
+	}
+	if selection.LeadTime {
+		if lt, err := metrics.ComputeLeadTime(primaryPath, authorEmail, sinceTime, untilTime); err == nil {
+			bundle.LeadTime = &lt
+		}
+	}
+	if selection.Churn {
+		if ch, err := metrics.ComputeChurn(primaryPath, authorEmail, sinceTime, untilTime, cWindow, exclude); err == nil {
+			bundle.Churn = &ch
+		}
+	}
+
 	// Generate output
 	switch output {
 	case "json":
-		return report.JSON(combined, file, breakdown)
+		return report.JSON(combined, file, breakdown, bundle)
 	case "html":
 		return report.HTML(combined, file, breakdown, theme)
 	default:
 		if perRepo && len(allStats) > 1 {
-			return report.TerminalWithRepos(combined, allStats, breakdown)
+			return report.TerminalWithRepos(combined, allStats, breakdown, bundle)
 		}
-		return report.Terminal(combined, breakdown)
+		return report.Terminal(combined, breakdown, bundle)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/juangracia/gitrespect/internal/benchmark"
 	"github.com/juangracia/gitrespect/internal/git"
+	"github.com/juangracia/gitrespect/internal/metrics"
 )
 
 const (
@@ -20,7 +21,7 @@ const (
 	colorYellow = "\033[33m"
 )
 
-func Terminal(stats git.RepoStats, breakdown string) error {
+func Terminal(stats git.RepoStats, breakdown string, bundle metrics.Bundle) error {
 	// Use full date range for daily average (not just active commit span)
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.Net) / float64(workingDays)
@@ -62,25 +63,47 @@ func Terminal(stats git.RepoStats, breakdown string) error {
 	}
 	fmt.Println()
 
-	// Industry comparison - only show for periods >= 30 days
-	if workingDays >= 21 { // ~30 calendar days = ~21 working days
-		comparisons := benchmark.Compare(locPerDay)
-		fmt.Printf("  %svs Industry:%s\n", colorDim, colorReset)
-		for i, c := range comparisons {
-			prefix := "├──"
-			if i == len(comparisons)-1 {
-				prefix = "└──"
+	// Baseline comparison (default) or legacy Senior/Avg/Junior (opt-in)
+	if bundle.LegacyBenchmark {
+		if workingDays >= 21 {
+			comparisons := benchmark.Compare(locPerDay)
+			fmt.Printf("  %svs Industry:%s\n", colorDim, colorReset)
+			for i, c := range comparisons {
+				prefix := "├──"
+				if i == len(comparisons)-1 {
+					prefix = "└──"
+				}
+				bar := renderBar(c.Multiplier, 20)
+				fmt.Printf("  %s %s (%d/day): %s%.1fx%s %s\n",
+					prefix, c.Label, c.Benchmark, colorYellow, c.Multiplier, colorReset, bar)
 			}
-			bar := renderBar(c.Multiplier, 20)
-			fmt.Printf("  %s %s (%d/day): %s%.1fx%s %s\n",
-				prefix, c.Label, c.Benchmark, colorYellow, c.Multiplier, colorReset, bar)
+		} else {
+			fmt.Printf("  %sPace:%s %.0f lines/day\n", colorDim, colorReset, locPerDay)
+			fmt.Printf("  %s(Industry comparison requires 30+ days of activity)%s\n", colorDim, colorReset)
 		}
-	} else {
-		// For shorter periods, show pace instead
-		fmt.Printf("  %sPace:%s %.0f lines/day\n", colorDim, colorReset, locPerDay)
-		fmt.Printf("  %s(Industry comparison requires 30+ days of activity)%s\n", colorDim, colorReset)
+	} else if bundle.Baseline != nil {
+		b := bundle.Baseline
+		windowDays := int(b.WindowEnd.Sub(b.WindowStart).Hours() / 24)
+		fmt.Printf("  %sBaseline (%dd prior):%s\n", colorDim, windowDays, colorReset)
+		if b.InsufficientHistory {
+			fmt.Printf("  └── %sinsufficient prior history%s\n", colorDim, colorReset)
+		} else {
+			sign := "+"
+			arrow := "↑"
+			color := colorGreen
+			if b.PercentDelta < 0 {
+				sign = ""
+				arrow = "↓"
+				color = colorYellow
+			}
+			fmt.Printf("  └── Your normal: %.0f lines/day → this period: %.0f (%s%s%.0f%%%s %s)\n",
+				b.LOCPerDay, b.PeriodLOCPerDay, color, sign, b.PercentDelta, colorReset, arrow)
+		}
 	}
 	fmt.Println()
+
+	// Opt-in metrics
+	renderMetrics(bundle)
 
 	// Monthly breakdown if requested
 	if breakdown == "monthly" && len(stats.Monthly) > 0 {
@@ -90,9 +113,71 @@ func Terminal(stats git.RepoStats, breakdown string) error {
 	return nil
 }
 
-func TerminalWithRepos(combined git.RepoStats, repos []git.RepoStats, breakdown string) error {
+func renderMetrics(b metrics.Bundle) {
+	if b.CommitSize != nil {
+		d := b.CommitSize
+		fmt.Printf("  %sCommit size distribution:%s\n", colorDim, colorReset)
+		rows := []struct {
+			label  string
+			bucket metrics.SizeBucket
+		}{
+			{"Micro (<10)", metrics.BucketMicro},
+			{"Small (10-99)", metrics.BucketSmall},
+			{"Medium (100-499)", metrics.BucketMedium},
+			{"Large (500+)", metrics.BucketLarge},
+		}
+		for i, row := range rows {
+			prefix := "├──"
+			if i == len(rows)-1 {
+				prefix = "└──"
+			}
+			pct := d.Percent(row.bucket)
+			bar := renderBar(pct/10, 20)
+			fmt.Printf("  %s %-18s %3.0f%%  %s\n", prefix, row.label+":", pct, bar)
+		}
+		fmt.Println()
+	}
+	if b.Cadence != nil {
+		c := b.Cadence
+		fmt.Printf("  %sIntegration cadence:%s\n", colorDim, colorReset)
+		switch {
+		case c.MainBranch == "":
+			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
+		case c.Samples < 1:
+			fmt.Printf("  └── %sinsufficient data (need 2+ commits on %s)%s\n", colorDim, c.MainBranch, colorReset)
+		default:
+			fmt.Printf("  └── Median %.1f days between commits to %s\n", c.MedianDaysBetween, c.MainBranch)
+		}
+		fmt.Println()
+	}
+	if b.LeadTime != nil {
+		lt := b.LeadTime
+		fmt.Printf("  %sLead time (branch → main):%s\n", colorDim, colorReset)
+		switch {
+		case lt.MainBranch == "":
+			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
+		case lt.Samples == 0:
+			fmt.Printf("  └── %sno merges in period%s\n", colorDim, colorReset)
+		default:
+			fmt.Printf("  └── Median %.1f days (%d merges analyzed)\n", lt.MedianDays, lt.Samples)
+		}
+		fmt.Println()
+	}
+	if b.Churn != nil {
+		c := b.Churn
+		fmt.Printf("  %sChurn rate:%s\n", colorDim, colorReset)
+		if c.AddedLines == 0 {
+			fmt.Printf("  └── %sno added lines to analyze%s\n", colorDim, colorReset)
+		} else {
+			fmt.Printf("  └── %.0f%% of added lines rewritten within %d days\n", c.Ratio*100, c.WindowDays)
+		}
+		fmt.Println()
+	}
+}
+
+func TerminalWithRepos(combined git.RepoStats, repos []git.RepoStats, breakdown string, bundle metrics.Bundle) error {
 	// Print combined stats first
-	if err := Terminal(combined, breakdown); err != nil {
+	if err := Terminal(combined, breakdown, bundle); err != nil {
 		return err
 	}
 
