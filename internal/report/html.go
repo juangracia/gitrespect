@@ -8,6 +8,7 @@ import (
 
 	"github.com/juangracia/gitrespect/internal/benchmark"
 	"github.com/juangracia/gitrespect/internal/git"
+	"github.com/juangracia/gitrespect/internal/metrics"
 )
 
 type HTMLData struct {
@@ -20,18 +21,46 @@ type HTMLData struct {
 	Commits     int
 	WorkingDays int
 	PerDay      float64
-	Benchmarks  []BenchmarkData
 	Monthly     []MonthlyHTMLData
 	HasMonthly  bool
 	Theme       string
 	IsDark      bool
+	Baseline    *BaselineHTMLData
+	CommitSize  *CommitSizeHTMLData
+	Cadence     *CadenceHTMLData
+	LeadTime    *LeadTimeHTMLData
+	Churn       *ChurnHTMLData
 }
 
-type BenchmarkData struct {
-	Label      string
-	Benchmark  int
-	Multiplier float64
-	BarWidth   int
+type BaselineHTMLData struct {
+	WindowDays   int
+	Normal       float64
+	Period       float64
+	PercentDelta float64
+	IsAbove      bool
+	Insufficient bool
+}
+
+type CommitSizeHTMLData struct {
+	MicroPct  float64
+	SmallPct  float64
+	MediumPct float64
+	LargePct  float64
+}
+
+type CadenceHTMLData struct {
+	MedianDays float64
+	Samples    int
+}
+
+type LeadTimeHTMLData struct {
+	MedianDays float64
+	Samples    int
+}
+
+type ChurnHTMLData struct {
+	Ratio      float64
+	WindowDays int
 }
 
 type MonthlyHTMLData struct {
@@ -206,31 +235,46 @@ const htmlTemplate = `<!DOCTYPE html>
             font-size: 14px;
         }
 
-        .benchmark-row {
+        .metric-row {
             display: flex;
             align-items: center;
-            padding: 12px 0;
+            justify-content: space-between;
+            padding: 10px 0;
             border-bottom: 1px solid var(--border);
         }
 
-        .benchmark-row:last-child {
+        .metric-row:last-child {
             border-bottom: none;
         }
 
-        .benchmark-label {
-            width: 140px;
+        .metric-label {
             font-size: 14px;
             color: var(--text-secondary);
         }
 
-        .benchmark-value {
-            width: 60px;
-            font-size: 13px;
-            color: var(--text-muted);
+        .metric-value {
+            font-size: 15px;
+            font-weight: 600;
             font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+            color: var(--accent);
         }
 
-        .benchmark-bar {
+        .metric-value.delta-up { color: var(--success); }
+        .metric-value.delta-down { color: var(--warning); }
+
+        .bar-row {
+            display: flex;
+            align-items: center;
+            padding: 6px 0;
+        }
+
+        .bar-label {
+            width: 90px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .bar-track {
             flex: 1;
             height: 8px;
             background: var(--bg-tertiary);
@@ -239,19 +283,18 @@ const htmlTemplate = `<!DOCTYPE html>
             margin: 0 12px;
         }
 
-        .benchmark-fill {
+        .bar-fill {
             height: 100%;
             background: linear-gradient(90deg, var(--accent), var(--success));
             border-radius: 4px;
-            transition: width 0.5s ease;
         }
 
-        .benchmark-multiplier {
-            width: 60px;
+        .bar-pct {
+            width: 42px;
             text-align: right;
-            font-weight: 600;
+            font-size: 13px;
             font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-            color: var(--accent);
+            color: var(--text-secondary);
         }
 
         table {
@@ -338,25 +381,87 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
         </div>
 
+        {{if .Baseline}}
+        <div class="section">
+            <div class="section-title">Personal Baseline</div>
+            {{if .Baseline.Insufficient}}
+            <div class="metric-row">
+                <div class="metric-label">Baseline (prior {{.Baseline.WindowDays}} days)</div>
+                <div class="metric-value">insufficient history</div>
+            </div>
+            {{else}}
+            <div class="metric-row">
+                <div class="metric-label">Your normal ({{.Baseline.WindowDays}}d prior)</div>
+                <div class="metric-value">{{printf "%.0f" .Baseline.Normal}} lines/day</div>
+            </div>
+            <div class="metric-row">
+                <div class="metric-label">This period</div>
+                <div class="metric-value">{{printf "%.0f" .Baseline.Period}} lines/day</div>
+            </div>
+            <div class="metric-row">
+                <div class="metric-label">Change vs baseline</div>
+                <div class="metric-value {{if .Baseline.IsAbove}}delta-up{{else}}delta-down{{end}}">{{if .Baseline.IsAbove}}+{{end}}{{printf "%.0f" .Baseline.PercentDelta}}% {{if .Baseline.IsAbove}}&#8593;{{else}}&#8595;{{end}}</div>
+            </div>
+            {{end}}
+        </div>
+        {{end}}
+
+        {{if .CommitSize}}
+        <div class="section">
+            <div class="section-title">Commit Size Distribution</div>
+            <div class="bar-row">
+                <div class="bar-label">Micro (&lt;10)</div>
+                <div class="bar-track"><div class="bar-fill" style="width: {{printf "%.0f" .CommitSize.MicroPct}}%"></div></div>
+                <div class="bar-pct">{{printf "%.0f" .CommitSize.MicroPct}}%</div>
+            </div>
+            <div class="bar-row">
+                <div class="bar-label">Small (10-99)</div>
+                <div class="bar-track"><div class="bar-fill" style="width: {{printf "%.0f" .CommitSize.SmallPct}}%"></div></div>
+                <div class="bar-pct">{{printf "%.0f" .CommitSize.SmallPct}}%</div>
+            </div>
+            <div class="bar-row">
+                <div class="bar-label">Medium (100-499)</div>
+                <div class="bar-track"><div class="bar-fill" style="width: {{printf "%.0f" .CommitSize.MediumPct}}%"></div></div>
+                <div class="bar-pct">{{printf "%.0f" .CommitSize.MediumPct}}%</div>
+            </div>
+            <div class="bar-row">
+                <div class="bar-label">Large (500+)</div>
+                <div class="bar-track"><div class="bar-fill" style="width: {{printf "%.0f" .CommitSize.LargePct}}%"></div></div>
+                <div class="bar-pct">{{printf "%.0f" .CommitSize.LargePct}}%</div>
+            </div>
+        </div>
+        {{end}}
+
+        {{if or .Cadence .LeadTime .Churn}}
+        <div class="section">
+            <div class="section-title">Flow &amp; Quality Metrics</div>
+            {{if .Cadence}}
+            <div class="metric-row">
+                <div class="metric-label">Integration cadence (median)</div>
+                <div class="metric-value">{{printf "%.1f" .Cadence.MedianDays}} days</div>
+            </div>
+            {{end}}
+            {{if .LeadTime}}
+            <div class="metric-row">
+                <div class="metric-label">Lead time branch &#8594; main (median)</div>
+                <div class="metric-value">{{printf "%.1f" .LeadTime.MedianDays}} days</div>
+            </div>
+            {{end}}
+            {{if .Churn}}
+            <div class="metric-row">
+                <div class="metric-label">Churn ({{.Churn.WindowDays}}d rewrite rate)</div>
+                <div class="metric-value">{{printf "%.0f" .Churn.Ratio}}%</div>
+            </div>
+            {{end}}
+        </div>
+        {{end}}
+
         <div class="section">
             <div class="section-title">Daily Output</div>
             <div class="daily-stat">{{printf "%.0f" .PerDay}}</div>
             <div class="daily-label">lines/day ({{.WorkingDays}} working days)</div>
         </div>
 
-        <div class="section">
-            <div class="section-title">Industry Comparison</div>
-            {{range .Benchmarks}}
-            <div class="benchmark-row">
-                <div class="benchmark-label">{{.Label}}</div>
-                <div class="benchmark-value">{{.Benchmark}}/day</div>
-                <div class="benchmark-bar">
-                    <div class="benchmark-fill" style="width: {{.BarWidth}}%"></div>
-                </div>
-                <div class="benchmark-multiplier">{{printf "%.1f" .Multiplier}}x</div>
-            </div>
-            {{end}}
-        </div>
 
         {{if .HasMonthly}}
         <div class="section">
@@ -549,7 +654,7 @@ const compareHtmlTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
-func HTML(stats git.RepoStats, filename string, breakdown string, theme string) error {
+func HTML(stats git.RepoStats, filename string, breakdown string, theme string, bundle metrics.Bundle) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.Net) / float64(workingDays)
 
@@ -570,19 +675,43 @@ func HTML(stats git.RepoStats, filename string, breakdown string, theme string) 
 		IsDark:      isDark,
 	}
 
-	// Add benchmarks
-	comparisons := benchmark.Compare(locPerDay)
-	for _, c := range comparisons {
-		barWidth := int(c.Multiplier * 10)
-		if barWidth > 100 {
-			barWidth = 100
+	if bundle.Baseline != nil {
+		b := bundle.Baseline
+		data.Baseline = &BaselineHTMLData{
+			WindowDays:   int(b.WindowEnd.Sub(b.WindowStart).Hours() / 24),
+			Normal:       b.LOCPerDay,
+			Period:       b.PeriodLOCPerDay,
+			PercentDelta: b.PercentDelta,
+			IsAbove:      b.PercentDelta >= 0,
+			Insufficient: b.InsufficientHistory,
 		}
-		data.Benchmarks = append(data.Benchmarks, BenchmarkData{
-			Label:      c.Label,
-			Benchmark:  c.Benchmark,
-			Multiplier: c.Multiplier,
-			BarWidth:   barWidth,
-		})
+	}
+	if bundle.CommitSize != nil && bundle.CommitSize.Total > 0 {
+		d := bundle.CommitSize
+		data.CommitSize = &CommitSizeHTMLData{
+			MicroPct:  d.Percent(metrics.BucketMicro),
+			SmallPct:  d.Percent(metrics.BucketSmall),
+			MediumPct: d.Percent(metrics.BucketMedium),
+			LargePct:  d.Percent(metrics.BucketLarge),
+		}
+	}
+	if bundle.Cadence != nil && bundle.Cadence.Samples >= 2 {
+		data.Cadence = &CadenceHTMLData{
+			MedianDays: bundle.Cadence.MedianDaysBetween,
+			Samples:    bundle.Cadence.Samples,
+		}
+	}
+	if bundle.LeadTime != nil && bundle.LeadTime.Samples > 0 {
+		data.LeadTime = &LeadTimeHTMLData{
+			MedianDays: bundle.LeadTime.MedianDays,
+			Samples:    bundle.LeadTime.Samples,
+		}
+	}
+	if bundle.Churn != nil && bundle.Churn.AddedLines > 0 {
+		data.Churn = &ChurnHTMLData{
+			Ratio:      bundle.Churn.Ratio * 100,
+			WindowDays: bundle.Churn.WindowDays,
+		}
 	}
 
 	// Add monthly if needed

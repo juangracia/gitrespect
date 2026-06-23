@@ -198,12 +198,17 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 
 	bundle := metrics.Bundle{Selection: selection, LegacyBenchmark: legacyBenchmark}
 
-	// Compute baseline and opt-in metrics. v1 limitation: only runs on paths[0]
-	// when analyzing multiple repos; emit a warning in that case.
-	if len(paths) > 1 && (!legacyBenchmark || selection.Any()) {
-		fmt.Fprintln(os.Stderr, "note: baseline and opt-in metrics computed from the first repo only")
-	}
+	// Pick the repo with the most author commits as the primary for DORA metrics.
 	primaryPath := paths[0]
+	if len(allStats) > 1 {
+		maxCommits := -1
+		for _, s := range allStats {
+			if s.Commits > maxCommits {
+				maxCommits = s.Commits
+				primaryPath = s.Path
+			}
+		}
+	}
 
 	if !legacyBenchmark {
 		baseline, err := metrics.ComputeBaseline(primaryPath, authorEmail, sinceTime, bWindow, exclude)
@@ -244,7 +249,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	case "json":
 		return report.JSON(combined, file, breakdown, bundle)
 	case "html":
-		return report.HTML(combined, file, breakdown, theme)
+		return report.HTML(combined, file, breakdown, theme, bundle)
 	default:
 		if perRepo && len(allStats) > 1 {
 			return report.TerminalWithRepos(combined, allStats, breakdown, bundle)

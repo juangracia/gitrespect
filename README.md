@@ -2,7 +2,7 @@
 
 > Respect your git work with real metrics
 
-A fast CLI tool that analyzes git repositories and provides comprehensive developer productivity metrics. **Measure the real impact of AI tools on your productivity**, track team contributions, and compare against industry benchmarks.
+A fast CLI tool that analyzes git repositories and provides comprehensive developer productivity metrics. **Measure the real impact of AI tools on your productivity**, track team contributions, and benchmark against your own personal baseline.
 
 ![gitrespect report](screenshots/report-full.png)
 
@@ -20,11 +20,13 @@ The rise of AI coding assistants (Copilot, Claude, Cursor) is changing how we wr
 ## Features
 
 - **AI Productivity Comparison** - Measure before/after impact of AI tools on your workflow
+- **Personal Baseline** - Compare this period against your own normal output (no arbitrary industry numbers)
+- **Flow & Quality Metrics** (opt-in) - Commit size distribution, integration cadence, lead time (branch → main), and churn
 - **Team Analysis** - Analyze multiple contributors as a team or organization
 - **Lines of Code** - Track added, deleted, and net lines across repositories
 - **Multi-repo Support** - Analyze multiple repositories at once
-- **Industry Comparison** - Compare against senior dev, industry avg, and junior dev benchmarks
-- **Multiple Output Formats** - Terminal, HTML reports (dark mode), JSON export
+- **Multiple Output Formats** - Terminal, HTML reports (dark/light themes), JSON export
+- **AI Agent Skill** - Bundled [skill](.claude/skills/gitrespect/SKILL.md) so Claude Code / Codex can run gitrespect for you
 
 ## Installation
 
@@ -106,11 +108,13 @@ my-project (Dec 4 2025 to Jan 3 2026)
 
   Daily avg: 127 lines/day (22 working days)
 
-  vs Industry:
-  ├── Senior Dev (20/day):     6.4x ████████████████████░░░░
-  ├── Industry Avg (50/day):   2.5x ████████░░░░░░░░░░░░░░░░
-  └── Junior Dev (100/day):    1.3x ████░░░░░░░░░░░░░░░░░░░░
+  Baseline (90d prior):
+  └── Your normal: 84 lines/day → this period: 127 (+51% ↑)
 ```
+
+By default gitrespect compares this period against **your own baseline** computed
+from the prior 90 days of history (configurable via `--baseline-window`). Add
+`--metrics` to opt into deeper flow and quality metrics (see [Opt-in Metrics](#opt-in-metrics)).
 
 ### Measure AI Impact (Before/After Comparison)
 
@@ -238,6 +242,34 @@ gitrespect --output=html --theme=light --file=report.html
 
 ![Light Theme](screenshots/report-light.png)
 
+### Opt-in Metrics
+
+Beyond lines of code and the personal baseline, gitrespect can compute deeper
+flow and quality metrics. These are **opt-in** (they run extra git queries) via
+the `--metrics` flag, which takes a comma-separated list or `all`:
+
+```bash
+# Everything
+gitrespect --metrics=all
+
+# Just the ones you want
+gitrespect --metrics=commit-size,churn
+
+# Full HTML report with every section
+gitrespect --year=2025 --breakdown=monthly --metrics=all --output=html --file=report.html
+```
+
+| Metric | Flag value | What it shows |
+|--------|-----------|---------------|
+| Commit size distribution | `commit-size` | % of commits that are micro (<10), small (10-99), medium (100-499), large (500+) |
+| Integration cadence | `cadence` | Median days between commits on the main branch |
+| Lead time | `lead-time` | Median days from a feature branch's first commit to its merge into main |
+| Churn | `churn` | % of recently added lines rewritten within the churn window (`--churn-window`, default 30d) |
+
+The personal baseline window is controlled with `--baseline-window` (e.g. `30d`,
+`90d`, `6m`, `1y`). To bring back the deprecated Senior/Avg/Junior comparison,
+pass `--legacy-benchmark`.
+
 ### Export to JSON
 
 ```bash
@@ -256,34 +288,56 @@ gitrespect --team=dev1@example.com,dev2@example.com --output=html --file=team-re
 gitrespect [paths...] [flags]
 
 Flags:
-  -a, --author string      Filter by author email (default: git config user.email)
-  -t, --team strings       Team mode: analyze multiple authors (comma-separated emails)
-  -r, --recursive          Scan subdirectories for git repositories
-  -s, --since string       Start date (YYYY-MM-DD or "30 days ago") (default: "30 days ago")
-  -u, --until string       End date (default: now)
-      --year int           Filter by year (e.g., --year=2025)
-  -b, --breakdown string   Show breakdown: monthly, weekly, or daily
-  -o, --output string      Output format: terminal, json, or html (default: terminal)
-  -f, --file string        Output file path (for html/json)
-      --theme string       HTML theme: dark or light (default: dark)
-  -h, --help               Show help
+  -a, --author string        Filter by author email (default: git config user.email)
+  -t, --team strings         Team mode: analyze multiple authors (comma-separated emails)
+  -r, --recursive            Scan subdirectories for git repositories
+      --per-repo             Show breakdown by repository when analyzing multiple repos
+  -s, --since string         Start date (YYYY-MM-DD or "30 days ago") (default: "30 days ago")
+  -u, --until string         End date (default: now)
+      --year int             Filter by year (e.g., --year=2025)
+  -b, --breakdown string     Show breakdown: monthly, weekly, or daily
+  -e, --exclude strings      Exclude files matching glob patterns (e.g. -e 'vendor/*')
+      --metrics string       Opt-in metrics: comma list of churn,lead-time,commit-size,cadence, or 'all'
+      --baseline-window str  Personal baseline window (e.g. 30d, 90d, 6m, 1y) (default: "90d")
+      --churn-window string  Churn detection window (default: "30d")
+      --legacy-benchmark     Show deprecated Senior/Avg/Junior comparison instead of personal baseline
+  -o, --output string        Output format: terminal, json, or html (default: terminal)
+  -f, --file string          Output file path (for html/json)
+      --theme string         HTML theme: dark or light (default: dark)
+  -h, --help                 Show help
 
 Commands:
   gitrespect compare       Compare two time periods
   gitrespect version       Show version info
 ```
 
-## Industry Benchmarks
+## Personal Baseline
 
-gitrespect compares your output against commonly cited industry benchmarks:
+Instead of comparing you against arbitrary industry numbers, gitrespect compares
+this period against **your own normal output**. It computes a baseline from the
+prior `--baseline-window` (default 90 days) of your commit history and reports how
+this period stacks up:
 
-| Level | LOC/Day | Source |
-|-------|---------|--------|
-| Senior Dev | 20 | Fred Brooks, "The Mythical Man-Month" |
-| Industry Avg | 50 | Various industry surveys |
-| Junior Dev | 100 | New developers often have higher raw output |
+```
+Baseline (90d prior):
+└── Your normal: 84 lines/day → this period: 127 (+51% ↑)
+```
 
-**Note:** Lines of code is just one metric. Quality, architecture decisions, code reviews, and mentoring are equally important contributions that aren't captured here.
+If there isn't enough prior history (under ~30 days of activity in the window),
+gitrespect says so rather than inventing a comparison.
+
+> The old Senior/Avg/Junior industry benchmark is deprecated but still available
+> via `--legacy-benchmark` for anyone who relied on it.
+
+**Note:** Lines of code is just one metric. Quality, architecture decisions, code reviews, and mentoring are equally important contributions that aren't captured here. The opt-in flow metrics (cadence, lead time, churn) give a fuller picture.
+
+## For AI Agents
+
+gitrespect ships with a [skill](.claude/skills/gitrespect/SKILL.md) that teaches AI
+coding agents (Claude Code, Codex, and compatible tools) how to run it: which
+flags to use, how to opt into metrics, and how to read the output. Clone the repo
+and the skill is picked up automatically, or point your agent at
+`.claude/skills/gitrespect/SKILL.md`.
 
 ## How It Works
 
