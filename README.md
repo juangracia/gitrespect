@@ -174,6 +174,16 @@ Jan 1 2025 to Dec 31 2025
   dev3@company.com                    8,423     86       32
 ```
 
+Team mode also honors `--metrics` and `--breakdown`: add `--metrics=all` to get
+each member's commit-size distribution and flow metrics (cadence, lead time,
+churn) computed individually, and `--breakdown=monthly` for a team-wide monthly
+table. This works in terminal, HTML, and JSON:
+
+```bash
+gitrespect repo1 repo2 --team=dev1@company.com,dev2@company.com \
+  --year=2025 --breakdown=monthly --metrics=all --output=html --file=team.html
+```
+
 ### Analyze Specific Path
 
 ```bash

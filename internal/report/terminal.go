@@ -338,7 +338,7 @@ func getChangeEmoji(multiplier float64) string {
 	return " 📉"
 }
 
-func TeamTerminal(stats git.TeamStats) error {
+func TeamTerminal(stats git.TeamStats, breakdown string, bundles map[string]metrics.Bundle) error {
 	// Calculate working days from combined member activity
 	var firstCommit, lastCommit time.Time
 	for _, m := range stats.Members {
@@ -419,5 +419,25 @@ func TeamTerminal(stats git.TeamStats) error {
 	}
 	fmt.Println()
 
+	// Per-member opt-in metrics (only when --metrics was requested)
+	for _, m := range members {
+		b, ok := bundles[m.email]
+		if !ok || !hasAnyMetric(b) {
+			continue
+		}
+		fmt.Printf("  %s● %s%s\n", colorBold, m.email, colorReset)
+		renderMetrics(b)
+	}
+
+	// Team-wide monthly breakdown
+	if breakdown == "monthly" && len(stats.Monthly) > 0 {
+		printMonthlyBreakdown(git.RepoStats{Monthly: stats.Monthly})
+	}
+
 	return nil
+}
+
+// hasAnyMetric reports whether the bundle carries at least one opt-in metric.
+func hasAnyMetric(b metrics.Bundle) bool {
+	return b.CommitSize != nil || b.Cadence != nil || b.LeadTime != nil || b.Churn != nil
 }

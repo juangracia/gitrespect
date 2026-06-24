@@ -166,9 +166,10 @@ func JSON(stats git.RepoStats, filename string, breakdown string, bundle metrics
 }
 
 type TeamJSONReport struct {
-	Period  PeriodInfo    `json:"period"`
-	Totals  TeamTotals    `json:"totals"`
-	Members []MemberStats `json:"members"`
+	Period  PeriodInfo         `json:"period"`
+	Totals  TeamTotals         `json:"totals"`
+	Members []MemberStats      `json:"members"`
+	Monthly []MonthlyJSONStats `json:"monthly,omitempty"`
 }
 
 type TeamTotals struct {
@@ -180,15 +181,16 @@ type TeamTotals struct {
 }
 
 type MemberStats struct {
-	Email   string  `json:"email"`
-	Added   int     `json:"added"`
-	Deleted int     `json:"deleted"`
-	Net     int     `json:"net"`
-	Commits int     `json:"commits"`
-	PerDay  float64 `json:"per_day"`
+	Email   string          `json:"email"`
+	Added   int             `json:"added"`
+	Deleted int             `json:"deleted"`
+	Net     int             `json:"net"`
+	Commits int             `json:"commits"`
+	PerDay  float64         `json:"per_day"`
+	Metrics *MetricsPayload `json:"metrics,omitempty"`
 }
 
-func TeamJSON(stats git.TeamStats, filename string) error {
+func TeamJSON(stats git.TeamStats, filename string, breakdown string, bundles map[string]metrics.Bundle) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 
 	report := TeamJSONReport{
@@ -220,14 +222,45 @@ func TeamJSON(stats git.TeamStats, filename string) error {
 	})
 
 	for _, m := range members {
-		report.Members = append(report.Members, MemberStats{
+		ms := MemberStats{
 			Email:   m.email,
 			Added:   m.stats.Added,
 			Deleted: m.stats.Deleted,
 			Net:     m.stats.Net,
 			Commits: m.stats.Commits,
 			PerDay:  float64(m.stats.Net) / float64(workingDays),
-		})
+		}
+		if b, ok := bundles[m.email]; ok {
+			if b.CommitSize != nil || b.Cadence != nil || b.LeadTime != nil || b.Churn != nil {
+				ms.Metrics = &MetricsPayload{
+					CommitSize: b.CommitSize,
+					Cadence:    b.Cadence,
+					LeadTime:   b.LeadTime,
+					Churn:      b.Churn,
+				}
+			}
+		}
+		report.Members = append(report.Members, ms)
+	}
+
+	// Team-wide monthly breakdown
+	if breakdown == "monthly" && len(stats.Monthly) > 0 {
+		var months []string
+		for m := range stats.Monthly {
+			months = append(months, m)
+		}
+		sort.Strings(months)
+		for _, m := range months {
+			mo := stats.Monthly[m]
+			report.Monthly = append(report.Monthly, MonthlyJSONStats{
+				Month:   getMonthName(mo.Month),
+				Year:    mo.Year,
+				Added:   mo.Added,
+				Deleted: mo.Deleted,
+				Net:     mo.Net,
+				Commits: mo.Commits,
+			})
+		}
 	}
 
 	data, err := json.MarshalIndent(report, "", "  ")

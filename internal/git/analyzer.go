@@ -49,6 +49,7 @@ type TeamStats struct {
 	TotalDeleted int
 	TotalNet     int
 	TotalCommits int
+	Monthly      map[string]MonthStats
 }
 
 func Analyze(repoPath, author string, since, until time.Time, excludePatterns []string) (RepoStats, error) {
