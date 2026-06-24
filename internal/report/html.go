@@ -821,27 +821,35 @@ func CompareHTML(comparison git.CompareStats, filename string, theme string) err
 }
 
 type TeamHTMLData struct {
-	Since        string
-	Until        string
-	TotalAdded   int
-	TotalDeleted int
-	TotalNet     int
-	TotalCommits int
-	WorkingDays  int
-	PerDay       float64
-	Members      []TeamMemberHTMLData
-	Theme        string
-	IsDark       bool
+	Since            string
+	Until            string
+	TotalAdded       int
+	TotalDeleted     int
+	TotalNet         int
+	TotalCommits     int
+	WorkingDays      int
+	PerDay           float64
+	Members          []TeamMemberHTMLData
+	HasMonthly       bool
+	Monthly          []MonthlyHTMLData
+	HasMemberMetrics bool
+	Theme            string
+	IsDark           bool
 }
 
 type TeamMemberHTMLData struct {
-	Email   string
-	Added   int
-	Deleted int
-	Net     int
-	Commits int
-	PerDay  float64
-	IsTop   bool
+	Email      string
+	Added      int
+	Deleted    int
+	Net        int
+	Commits    int
+	PerDay     float64
+	IsTop      bool
+	HasMetrics bool
+	CommitSize *CommitSizeHTMLData
+	Cadence    *CadenceHTMLData
+	LeadTime   *LeadTimeHTMLData
+	Churn      *ChurnHTMLData
 }
 
 const teamHtmlTemplate = `<!DOCTYPE html>
@@ -917,6 +925,22 @@ const teamHtmlTemplate = `<!DOCTYPE html>
         tr:hover { background: var(--bg-tertiary); }
         .top-row td { color: var(--success); font-weight: 600; }
 
+        .member-card { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+        .member-card:last-child { margin-bottom: 0; }
+        .member-card-title { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; }
+        .member-subtitle { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; }
+
+        .metric-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+        .metric-row:last-child { border-bottom: none; }
+        .metric-label { font-size: 14px; color: var(--text-secondary); }
+        .metric-value { font-size: 15px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; color: var(--accent); }
+
+        .bar-row { display: flex; align-items: center; padding: 5px 0; }
+        .bar-label { width: 130px; font-size: 13px; color: var(--text-secondary); }
+        .bar-track { flex: 1; height: 8px; background: var(--bg-secondary); border-radius: 4px; overflow: hidden; margin: 0 12px; }
+        .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); border-radius: 4px; }
+        .bar-pct { width: 42px; text-align: right; font-size: 13px; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; color: var(--text-secondary); }
+
         footer { text-align: center; padding: 24px; color: var(--text-muted); font-size: 12px; }
         footer a { color: var(--accent); text-decoration: none; }
     </style>
@@ -954,12 +978,52 @@ const teamHtmlTemplate = `<!DOCTYPE html>
             </table>
         </div>
 
+        {{if .HasMemberMetrics}}
+        <div class="section">
+            <div class="section-title">Per-Member Metrics</div>
+            {{range .Members}}
+            {{if .HasMetrics}}
+            <div class="member-card">
+                <div class="member-card-title">{{.Email}}</div>
+                {{if .CommitSize}}
+                <div class="member-subtitle">Commit Size Distribution</div>
+                <div class="bar-row"><div class="bar-label">Micro (&lt;10)</div><div class="bar-track"><div class="bar-fill" style="width: {{printf "%.0f" .CommitSize.MicroPct}}%"></div></div><div class="bar-pct">{{printf "%.0f" .CommitSize.MicroPct}}%</div></div>
+                <div class="bar-row"><div class="bar-label">Small (10-99)</div><div class="bar-track"><div class="bar-fill" style="width: {{printf "%.0f" .CommitSize.SmallPct}}%"></div></div><div class="bar-pct">{{printf "%.0f" .CommitSize.SmallPct}}%</div></div>
+                <div class="bar-row"><div class="bar-label">Medium (100-499)</div><div class="bar-track"><div class="bar-fill" style="width: {{printf "%.0f" .CommitSize.MediumPct}}%"></div></div><div class="bar-pct">{{printf "%.0f" .CommitSize.MediumPct}}%</div></div>
+                <div class="bar-row"><div class="bar-label">Large (500+)</div><div class="bar-track"><div class="bar-fill" style="width: {{printf "%.0f" .CommitSize.LargePct}}%"></div></div><div class="bar-pct">{{printf "%.0f" .CommitSize.LargePct}}%</div></div>
+                {{end}}
+                {{if or .Cadence .LeadTime .Churn}}
+                <div class="member-subtitle">Flow &amp; Quality</div>
+                {{if .Cadence}}<div class="metric-row"><div class="metric-label">Integration cadence (median)</div><div class="metric-value">{{printf "%.1f" .Cadence.MedianDays}} days</div></div>{{end}}
+                {{if .LeadTime}}<div class="metric-row"><div class="metric-label">Lead time branch &#8594; main (median)</div><div class="metric-value">{{printf "%.1f" .LeadTime.MedianDays}} days</div></div>{{end}}
+                {{if .Churn}}<div class="metric-row"><div class="metric-label">Churn ({{.Churn.WindowDays}}d rewrite rate)</div><div class="metric-value">{{printf "%.0f" .Churn.Ratio}}%</div></div>{{end}}
+                {{end}}
+            </div>
+            {{end}}
+            {{end}}
+        </div>
+        {{end}}
+
+        {{if .HasMonthly}}
+        <div class="section">
+            <div class="section-title">Team Monthly Breakdown</div>
+            <table>
+                <thead><tr><th>Month</th><th>Added</th><th>Deleted</th><th>Net</th></tr></thead>
+                <tbody>
+                    {{range .Monthly}}
+                    <tr{{if .IsMax}} class="top-row"{{end}}><td>{{.Month}} {{.Year}}</td><td>+{{.Added}}</td><td>-{{.Deleted}}</td><td>{{.Net}}</td></tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{end}}
+
         <footer>Generated by <a href="https://github.com/juangracia/gitrespect">gitrespect</a></footer>
     </div>
 </body>
 </html>`
 
-func TeamHTML(stats git.TeamStats, filename string, theme string) error {
+func TeamHTML(stats git.TeamStats, filename string, theme string, breakdown string, bundles map[string]metrics.Bundle) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 
 	isDark := theme != "light"
@@ -991,7 +1055,7 @@ func TeamHTML(stats git.TeamStats, filename string, theme string) error {
 	})
 
 	for i, m := range members {
-		data.Members = append(data.Members, TeamMemberHTMLData{
+		md := TeamMemberHTMLData{
 			Email:   m.email,
 			Added:   m.stats.Added,
 			Deleted: m.stats.Deleted,
@@ -999,7 +1063,59 @@ func TeamHTML(stats git.TeamStats, filename string, theme string) error {
 			Commits: m.stats.Commits,
 			PerDay:  float64(m.stats.Net) / float64(workingDays),
 			IsTop:   i == 0,
-		})
+		}
+		if b, ok := bundles[m.email]; ok {
+			if b.CommitSize != nil && b.CommitSize.Total > 0 {
+				d := b.CommitSize
+				md.CommitSize = &CommitSizeHTMLData{
+					MicroPct:  d.Percent(metrics.BucketMicro),
+					SmallPct:  d.Percent(metrics.BucketSmall),
+					MediumPct: d.Percent(metrics.BucketMedium),
+					LargePct:  d.Percent(metrics.BucketLarge),
+				}
+			}
+			if b.Cadence != nil && b.Cadence.Samples >= 2 {
+				md.Cadence = &CadenceHTMLData{MedianDays: b.Cadence.MedianDaysBetween, Samples: b.Cadence.Samples}
+			}
+			if b.LeadTime != nil && b.LeadTime.Samples > 0 {
+				md.LeadTime = &LeadTimeHTMLData{MedianDays: b.LeadTime.MedianDays, Samples: b.LeadTime.Samples}
+			}
+			if b.Churn != nil && b.Churn.AddedLines > 0 {
+				md.Churn = &ChurnHTMLData{Ratio: b.Churn.Ratio * 100, WindowDays: b.Churn.WindowDays}
+			}
+			md.HasMetrics = md.CommitSize != nil || md.Cadence != nil || md.LeadTime != nil || md.Churn != nil
+			if md.HasMetrics {
+				data.HasMemberMetrics = true
+			}
+		}
+		data.Members = append(data.Members, md)
+	}
+
+	// Team-wide monthly breakdown
+	if breakdown == "monthly" && len(stats.Monthly) > 0 {
+		var months []string
+		maxNet := 0
+		maxMonth := ""
+		for m, ms := range stats.Monthly {
+			months = append(months, m)
+			if ms.Net > maxNet {
+				maxNet = ms.Net
+				maxMonth = m
+			}
+		}
+		sort.Strings(months)
+		for _, m := range months {
+			ms := stats.Monthly[m]
+			data.Monthly = append(data.Monthly, MonthlyHTMLData{
+				Month:   getMonthName(ms.Month),
+				Year:    ms.Year,
+				Added:   ms.Added,
+				Deleted: ms.Deleted,
+				Net:     ms.Net,
+				IsMax:   m == maxMonth,
+			})
+		}
+		data.HasMonthly = len(data.Monthly) > 0
 	}
 
 	tmpl, err := template.New("team").Parse(teamHtmlTemplate)

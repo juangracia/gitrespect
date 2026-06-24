@@ -196,19 +196,10 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --churn-window: %w", err)
 	}
 
-	bundle := metrics.Bundle{Selection: selection, LegacyBenchmark: legacyBenchmark}
-
-	// Pick the repo with the most author commits as the primary for DORA metrics.
-	primaryPath := paths[0]
-	if len(allStats) > 1 {
-		maxCommits := -1
-		for _, s := range allStats {
-			if s.Commits > maxCommits {
-				maxCommits = s.Commits
-				primaryPath = s.Path
-			}
-		}
-	}
+	// Pick the repo with the most author commits as the primary for opt-in metrics.
+	primaryPath := primaryRepo(allStats, paths[0])
+	bundle := computeOptInMetrics(primaryPath, authorEmail, sinceTime, untilTime, selection, cWindow, exclude)
+	bundle.LegacyBenchmark = legacyBenchmark
 
 	if !legacyBenchmark {
 		baseline, err := metrics.ComputeBaseline(primaryPath, authorEmail, sinceTime, bWindow, exclude)
@@ -220,27 +211,6 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 			}
 			baseline.SetPeriod(locPerDay)
 			bundle.Baseline = &baseline
-		}
-	}
-
-	if selection.CommitSize {
-		if d, err := metrics.ComputeCommitSize(primaryPath, authorEmail, sinceTime, untilTime, exclude); err == nil {
-			bundle.CommitSize = &d
-		}
-	}
-	if selection.Cadence {
-		if c, err := metrics.ComputeCadence(primaryPath, authorEmail, sinceTime, untilTime); err == nil {
-			bundle.Cadence = &c
-		}
-	}
-	if selection.LeadTime {
-		if lt, err := metrics.ComputeLeadTime(primaryPath, authorEmail, sinceTime, untilTime); err == nil {
-			bundle.LeadTime = &lt
-		}
-	}
-	if selection.Churn {
-		if ch, err := metrics.ComputeChurn(primaryPath, authorEmail, sinceTime, untilTime, cWindow, exclude); err == nil {
-			bundle.Churn = &ch
 		}
 	}
 
@@ -259,11 +229,22 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 }
 
 func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time.Time) error {
+	selection, err := metrics.ParseSelection(metricsFlag)
+	if err != nil {
+		return err
+	}
+	cWindow, err := parseWindow(churnWindow)
+	if err != nil {
+		return fmt.Errorf("invalid --churn-window: %w", err)
+	}
+
 	teamStats := git.TeamStats{
 		Since:   sinceTime,
 		Until:   untilTime,
 		Members: make(map[string]git.RepoStats),
 	}
+	bundles := make(map[string]metrics.Bundle)
+	var memberCombined []git.RepoStats
 
 	// Analyze each team member
 	for _, member := range members {
@@ -276,13 +257,22 @@ func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time
 			memberStats = append(memberStats, stats)
 		}
 
-		if len(memberStats) > 0 {
-			combined := git.CombineStats(memberStats)
-			teamStats.Members[member] = combined
-			teamStats.TotalAdded += combined.Added
-			teamStats.TotalDeleted += combined.Deleted
-			teamStats.TotalNet += combined.Net
-			teamStats.TotalCommits += combined.Commits
+		if len(memberStats) == 0 {
+			continue
+		}
+
+		combined := git.CombineStats(memberStats)
+		teamStats.Members[member] = combined
+		teamStats.TotalAdded += combined.Added
+		teamStats.TotalDeleted += combined.Deleted
+		teamStats.TotalNet += combined.Net
+		teamStats.TotalCommits += combined.Commits
+		memberCombined = append(memberCombined, combined)
+
+		// Per-member opt-in metrics, computed on the member's primary repo.
+		if selection.Any() {
+			primary := primaryRepo(memberStats, paths[0])
+			bundles[member] = computeOptInMetrics(primary, member, sinceTime, untilTime, selection, cWindow, exclude)
 		}
 	}
 
@@ -290,13 +280,58 @@ func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time
 		return fmt.Errorf("no team members could be analyzed")
 	}
 
+	// Team-wide monthly breakdown aggregated across all members.
+	teamStats.Monthly = git.CombineStats(memberCombined).Monthly
+
 	// Generate output
 	switch output {
 	case "json":
-		return report.TeamJSON(teamStats, file)
+		return report.TeamJSON(teamStats, file, breakdown, bundles)
 	case "html":
-		return report.TeamHTML(teamStats, file, theme)
+		return report.TeamHTML(teamStats, file, theme, breakdown, bundles)
 	default:
-		return report.TeamTerminal(teamStats)
+		return report.TeamTerminal(teamStats, breakdown, bundles)
 	}
+}
+
+// primaryRepo returns the path of the repo with the most commits in stats,
+// falling back to the given path when stats is empty.
+func primaryRepo(stats []git.RepoStats, fallback string) string {
+	primary := fallback
+	maxCommits := -1
+	for _, s := range stats {
+		if s.Commits > maxCommits {
+			maxCommits = s.Commits
+			primary = s.Path
+		}
+	}
+	return primary
+}
+
+// computeOptInMetrics computes the opt-in metrics selected on the given repo for
+// one author. Each metric is best-effort: a failure leaves that field nil rather
+// than aborting the whole report.
+func computeOptInMetrics(primaryPath, author string, since, until time.Time, sel metrics.Selection, cWindow time.Duration, exclude []string) metrics.Bundle {
+	bundle := metrics.Bundle{Selection: sel}
+	if sel.CommitSize {
+		if d, err := metrics.ComputeCommitSize(primaryPath, author, since, until, exclude); err == nil {
+			bundle.CommitSize = &d
+		}
+	}
+	if sel.Cadence {
+		if c, err := metrics.ComputeCadence(primaryPath, author, since, until); err == nil {
+			bundle.Cadence = &c
+		}
+	}
+	if sel.LeadTime {
+		if lt, err := metrics.ComputeLeadTime(primaryPath, author, since, until); err == nil {
+			bundle.LeadTime = &lt
+		}
+	}
+	if sel.Churn {
+		if ch, err := metrics.ComputeChurn(primaryPath, author, since, until, cWindow, exclude); err == nil {
+			bundle.Churn = &ch
+		}
+	}
+	return bundle
 }

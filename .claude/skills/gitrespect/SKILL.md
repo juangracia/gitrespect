@@ -40,6 +40,7 @@ Map what the user wants to the right flags. Common intents:
 | A whole year | `gitrespect --year=2025` |
 | A monthly trend | `gitrespect --year=2025 -b monthly` |
 | A team total | `gitrespect -t a@x.com,b@x.com,c@x.com --year=2025` |
+| A team with per-member metrics | `gitrespect -t a@x.com,b@x.com --year=2025 --metrics=all -b monthly` |
 | Several repos at once | `gitrespect ./api ./web ./gateway` |
 | Every repo under a folder | `gitrespect -r ~/projects` |
 | Per-repo breakdown | `gitrespect -r ~/projects --per-repo` |
@@ -151,4 +152,5 @@ gitrespect -r ~/projects --per-repo --year=2025
 - **Baseline + `--year` (or any window covering all of a repo's history):** the baseline looks at history *before* the window start, so if the repo's first commit falls inside the analyzed window, the baseline is always "insufficient prior history." Widen the window backward, use a shorter analysis period with `-s/-u`, or fall back to `-b monthly` to show the within-period trend.
 - Shallow clones undercount history; fetch full history for accurate baselines/lead time.
 - `--metrics` and the personal baseline currently compute from the repo with the most of the author's commits when multiple repos are given.
+- Team mode (`-t`) honors `--metrics` (computed per member) and `--breakdown=monthly` (team-wide). The personal baseline is single-author only and is not shown in team reports.
 - Quote relative dates: `-s "30 days ago"`.
