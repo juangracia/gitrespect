@@ -96,7 +96,7 @@ func ComputeCommitSize(repoPath, author string, since, until time.Time, exclude 
 			continue
 		}
 		filename := strings.Join(fields[2:], " ")
-		if shouldExcludeFile(filename, exclude) {
+		if git.ShouldExclude(filename, exclude) {
 			continue
 		}
 		a, err1 := strconv.Atoi(fields[0])

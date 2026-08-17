@@ -3,7 +3,6 @@ package metrics
 import (
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,30 +49,6 @@ func median(xs []float64) float64 {
 	return (sorted[n/2-1] + sorted[n/2]) / 2
 }
 
-// shouldExcludeFile mirrors git.shouldExclude (internal/git/analyzer.go).
-func shouldExcludeFile(filename string, patterns []string) bool {
-	for _, p := range patterns {
-		if m, _ := filepath.Match(p, filename); m {
-			return true
-		}
-		if m, _ := filepath.Match(p, filepath.Base(filename)); m {
-			return true
-		}
-		if strings.Contains(p, "/") {
-			parts := strings.SplitN(p, "/", 2)
-			if len(parts) == 2 && strings.HasPrefix(filename, parts[0]+"/") {
-				if parts[1] == "*" {
-					return true
-				}
-				if m, _ := filepath.Match(parts[1], filename[len(parts[0])+1:]); m {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
 // sumNumstat returns (totalAdded, totalDeleted) for the author's commits in the window,
 // excluding binary files and excluded patterns.
 func sumNumstat(repoPath, author string, since, until time.Time, exclude []string) (int, int, error) {
@@ -103,7 +78,7 @@ func sumNumstat(repoPath, author string, since, until time.Time, exclude []strin
 			continue
 		}
 		filename := strings.Join(fields[2:], " ")
-		if shouldExcludeFile(filename, exclude) {
+		if git.ShouldExclude(filename, exclude) {
 			continue
 		}
 		a, err1 := strconv.Atoi(fields[0])

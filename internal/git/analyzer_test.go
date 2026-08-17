@@ -144,6 +144,64 @@ func TestAnalyzeDoesNotMatchSubstringAddresses(t *testing.T) {
 	}
 }
 
+// --- rename paths and excludes ----------------------------------------------
+
+func TestRenamePaths(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"src/main.go", []string{"src/main.go"}},
+		{"vendor/{lib.go => lib2.go}", []string{"vendor/lib.go", "vendor/lib2.go"}},
+		{"{vendor => src}/lib.go", []string{"vendor/lib.go", "src/lib.go"}},
+		{"a/{b => c}/d.go", []string{"a/b/d.go", "a/c/d.go"}},
+		{"old.go => new.go", []string{"old.go", "new.go"}},
+		// Moving to or from the repo root must not leave a stray separator.
+		{"{ => src}/lib.go", []string{"lib.go", "src/lib.go"}},
+	}
+	for _, tc := range tests {
+		got := RenamePaths(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("RenamePaths(%q) = %v, want %v", tc.in, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("RenamePaths(%q) = %v, want %v", tc.in, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
+// A rename that crosses directories is printed as "{vendor => src}/lib.go",
+// which matches neither the old nor the new glob, so excludes silently failed.
+func TestShouldExcludeHandlesRenames(t *testing.T) {
+	tests := []struct {
+		filename string
+		pattern  string
+		want     bool
+	}{
+		{"{vendor => src}/lib.go", "src/*", true},
+		{"{vendor => src}/lib.go", "vendor/*", true},
+		{"{vendor => src}/lib.go", "docs/*", false},
+		{"vendor/{a.go => b.go}", "vendor/*", true},
+		{"src/main.go", "vendor/*", false},
+		{"src/main.go", "src/*", true},
+		{"api.pb.go", "*.pb.go", true},
+	}
+	for _, tc := range tests {
+		if got := ShouldExclude(tc.filename, []string{tc.pattern}); got != tc.want {
+			t.Errorf("ShouldExclude(%q, %q) = %v, want %v",
+				tc.filename, tc.pattern, got, tc.want)
+		}
+	}
+
+	if ShouldExclude("anything.go", nil) {
+		t.Error("ShouldExclude with no patterns should be false")
+	}
+}
+
 // --- commit header parsing --------------------------------------------------
 
 func TestParseCommitHeader(t *testing.T) {

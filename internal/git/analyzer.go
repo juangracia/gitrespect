@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -178,7 +179,7 @@ func Analyze(repoPath, author string, since, until time.Time, excludePatterns []
 
 			// Check if file matches any exclude pattern
 			filename := strings.Join(fields[2:], " ") // Handle filenames with spaces
-			if shouldExclude(filename, excludePatterns) {
+			if ShouldExclude(filename, excludePatterns) {
 				continue
 			}
 
@@ -541,7 +542,60 @@ func WorkingDays(since, until time.Time) int {
 }
 
 // shouldExclude checks if a filename matches any of the exclude patterns
-func shouldExclude(filename string, patterns []string) bool {
+// RenamePaths expands git's compact rename notation into the concrete paths it
+// refers to.
+//
+// numstat prints a rename as "{vendor => src}/lib.go", "vendor/{a.go => b.go}"
+// or "a.go => b.go". None of those match the old or the new path literally, so
+// a glob like "vendor/*" silently failed to exclude a renamed file. Both sides
+// are returned so a pattern matching either one excludes the change.
+func RenamePaths(name string) []string {
+	if !strings.Contains(name, " => ") {
+		return []string{name}
+	}
+
+	if open := strings.Index(name, "{"); open >= 0 {
+		if closing := strings.Index(name[open:], "}"); closing >= 0 {
+			closing += open
+			prefix, suffix := name[:open], name[closing+1:]
+			from, to, ok := strings.Cut(name[open+1:closing], " => ")
+			if ok {
+				return []string{
+					cleanRenamePath(prefix + from + suffix),
+					cleanRenamePath(prefix + to + suffix),
+				}
+			}
+		}
+	}
+
+	// Whole-path rename, printed without braces.
+	if from, to, ok := strings.Cut(name, " => "); ok {
+		return []string{cleanRenamePath(from), cleanRenamePath(to)}
+	}
+	return []string{name}
+}
+
+// cleanRenamePath tidies a path assembled from a rename, which can pick up a
+// doubled or leading separator when a file moves to or from the repo root.
+func cleanRenamePath(p string) string {
+	return strings.TrimPrefix(path.Clean(p), "/")
+}
+
+// ShouldExclude reports whether filename matches any of the glob patterns.
+// Renames are matched on both their old and new path.
+func ShouldExclude(filename string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	for _, candidate := range RenamePaths(filename) {
+		if matchesAny(candidate, patterns) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAny(filename string, patterns []string) bool {
 	for _, pattern := range patterns {
 		// Try matching the full path
 		if matched, _ := filepath.Match(pattern, filename); matched {
