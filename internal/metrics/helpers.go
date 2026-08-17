@@ -77,14 +77,14 @@ func shouldExcludeFile(filename string, patterns []string) bool {
 // sumNumstat returns (totalAdded, totalDeleted) for the author's commits in the window,
 // excluding binary files and excluded patterns.
 func sumNumstat(repoPath, author string, since, until time.Time, exclude []string) (int, int, error) {
-	args := []string{
-		"-C", repoPath, "log",
-		"--author=" + author,
-		"--since=" + git.TimeArg(since),
-		"--until=" + git.TimeArg(until),
+	args := []string{"-C", repoPath, "log"}
+	args = append(args, git.AuthorArgs(author)...)
+	args = append(args,
+		"--since="+git.TimeArg(since),
+		"--until="+git.TimeArg(until),
 		"--pretty=format:",
 		"--numstat",
-	}
+	)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return 0, 0, fmt.Errorf("git log: %w", err)

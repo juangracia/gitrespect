@@ -102,16 +102,15 @@ func Analyze(repoPath, author string, since, until time.Time, excludePatterns []
 	}
 
 	// Get commit stats with numstat
-	args := []string{
-		"-C", repoPath,
-		"log",
-		"--author=" + author,
-		"--since=" + TimeArg(since),
-		"--until=" + TimeArg(until),
+	args := []string{"-C", repoPath, "log"}
+	args = append(args, AuthorArgs(author)...)
+	args = append(args,
+		"--since="+TimeArg(since),
+		"--until="+TimeArg(until),
 		"--pretty=format:%H|%ad",
 		"--date=short",
 		"--numstat",
-	}
+	)
 
 	cmd := exec.Command("git", args...)
 	output, err := cmd.Output()
@@ -312,6 +311,31 @@ func GetDefaultAuthor(repoPath string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+// AuthorArgs builds the git log flags that select commits by author.
+//
+// git matches --author as a regular expression against "Name <email>", and it
+// matches substrings. A bare address like "jo@corp.com" therefore also matches
+// "bojo@corp.com", which inflates that member's totals and double-counts the
+// team. When the input is a complete address, anchor it on the angle brackets
+// git puts around the email. --fixed-strings additionally stops characters
+// like "." in an address being treated as regex wildcards.
+func AuthorArgs(author string) []string {
+	if author == "" {
+		return nil
+	}
+	pattern := author
+	if looksLikeEmail(author) {
+		pattern = "<" + author + ">"
+	}
+	return []string{"--fixed-strings", "--author=" + pattern}
+}
+
+// looksLikeEmail reports whether s is a complete address rather than a name
+// fragment, which callers may legitimately pass to match loosely.
+func looksLikeEmail(s string) bool {
+	return strings.Contains(s, "@") && !strings.ContainsAny(s, " <>")
 }
 
 // TimeArg formats t for git's --since/--until flags.

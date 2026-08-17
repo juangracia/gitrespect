@@ -28,14 +28,14 @@ func ComputeCadence(repoPath, author string, since, until time.Time) (Cadence, e
 	}
 	c.MainBranch = branch
 
-	args := []string{
-		"-C", repoPath, "log", branch,
-		"--author=" + author,
-		"--since=" + git.TimeArg(since),
-		"--until=" + git.TimeArg(until),
+	args := []string{"-C", repoPath, "log", branch}
+	args = append(args, git.AuthorArgs(author)...)
+	args = append(args,
+		"--since="+git.TimeArg(since),
+		"--until="+git.TimeArg(until),
 		"--no-merges",
 		"--format=%ct",
-	}
+	)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return c, fmt.Errorf("git log: %w", err)

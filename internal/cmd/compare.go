@@ -125,9 +125,9 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	authorEmail := author
-	if authorEmail == "" {
-		authorEmail, _ = git.GetDefaultAuthor(paths[0])
+	authorEmail, err := resolveAuthor(author, paths[0])
+	if err != nil {
+		return err
 	}
 
 	// Analyze both periods

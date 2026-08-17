@@ -40,16 +40,13 @@ func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime,
 		return LeadTime{MainBranch: ""}, nil
 	}
 
-	args := []string{
-		"-C", repoPath,
-		"log", main,
-		"--merges",
-		"--first-parent",
-		"--author=" + author,
-		"--since=" + git.TimeArg(since),
-		"--until=" + git.TimeArg(until),
+	args := []string{"-C", repoPath, "log", main, "--merges", "--first-parent"}
+	args = append(args, git.AuthorArgs(author)...)
+	args = append(args,
+		"--since="+git.TimeArg(since),
+		"--until="+git.TimeArg(until),
 		"--format=%H %P %ct",
-	}
+	)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return LeadTime{}, fmt.Errorf("git log: %w", err)
@@ -121,15 +118,13 @@ func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime,
 // later than their author date carry a signal; a commit made directly on main
 // has identical dates and is correctly excluded rather than counted as zero.
 func authoredLeadTime(repoPath, author, main string, since, until time.Time) (LeadTime, error) {
-	args := []string{
-		"-C", repoPath,
-		"log", main,
-		"--no-merges",
-		"--author=" + author,
-		"--since=" + git.TimeArg(since),
-		"--until=" + git.TimeArg(until),
+	args := []string{"-C", repoPath, "log", main, "--no-merges"}
+	args = append(args, git.AuthorArgs(author)...)
+	args = append(args,
+		"--since="+git.TimeArg(since),
+		"--until="+git.TimeArg(until),
 		"--format=%at %ct",
-	}
+	)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return LeadTime{MainBranch: main}, fmt.Errorf("git log: %w", err)

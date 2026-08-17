@@ -38,14 +38,14 @@ func (d CommitSizeDistribution) Percent(b SizeBucket) float64 {
 // given author and date window. Binary files and files matching exclude patterns
 // are ignored.
 func ComputeCommitSize(repoPath, author string, since, until time.Time, exclude []string) (CommitSizeDistribution, error) {
-	args := []string{
-		"-C", repoPath, "log",
-		"--author=" + author,
-		"--since=" + git.TimeArg(since),
-		"--until=" + git.TimeArg(until),
+	args := []string{"-C", repoPath, "log"}
+	args = append(args, git.AuthorArgs(author)...)
+	args = append(args,
+		"--since="+git.TimeArg(since),
+		"--until="+git.TimeArg(until),
 		"--pretty=format:COMMIT %H",
 		"--numstat",
-	}
+	)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return CommitSizeDistribution{}, fmt.Errorf("git log: %w", err)

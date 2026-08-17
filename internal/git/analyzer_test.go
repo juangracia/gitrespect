@@ -96,6 +96,54 @@ func TestTimeArgIncludesZoneOffset(t *testing.T) {
 	}
 }
 
+// --- author matching --------------------------------------------------------
+
+func TestAuthorArgsAnchorsFullAddresses(t *testing.T) {
+	got := AuthorArgs("jo@corp.com")
+	want := []string{"--fixed-strings", "--author=<jo@corp.com>"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("AuthorArgs(email) = %v, want %v", got, want)
+	}
+
+	// A name fragment must stay loose so partial matching still works.
+	got = AuthorArgs("alice")
+	if got[1] != "--author=alice" {
+		t.Errorf("AuthorArgs(name) = %v, want an unanchored pattern", got)
+	}
+
+	if AuthorArgs("") != nil {
+		t.Error("AuthorArgs(\"\") should return no flags")
+	}
+}
+
+// One member's address being a substring of another's must not merge their
+// commits, which previously double-counted team totals.
+func TestAnalyzeDoesNotMatchSubstringAddresses(t *testing.T) {
+	r := newRepo(t)
+	r.commitLines("jo.txt", 10, "jo@corp.com", day(2025, 6, 1))
+	r.commitLines("bojo.txt", 25, "bojo@corp.com", day(2025, 6, 2))
+
+	since := time.Date(2025, 1, 1, 0, 0, 0, 0, time.Local)
+	until := time.Date(2025, 12, 31, 23, 59, 59, 0, time.Local)
+
+	jo, err := Analyze(r.path, "jo@corp.com", since, until, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jo.Commits != 1 || jo.Added != 10 {
+		t.Errorf("jo = commits %d added %d, want 1 and 10 (bojo must not leak in)",
+			jo.Commits, jo.Added)
+	}
+
+	bojo, err := Analyze(r.path, "bojo@corp.com", since, until, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bojo.Commits != 1 || bojo.Added != 25 {
+		t.Errorf("bojo = commits %d added %d, want 1 and 25", bojo.Commits, bojo.Added)
+	}
+}
+
 // --- commit header parsing --------------------------------------------------
 
 func TestParseCommitHeader(t *testing.T) {

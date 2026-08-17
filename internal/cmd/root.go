@@ -116,6 +116,20 @@ func validateOutputFlags(breakdown, output, theme string) error {
 	return nil
 }
 
+// resolveAuthor returns the explicit --author, or falls back to the repo's
+// configured user.email. An empty author would match every commit in the
+// repository, so report the whole repo as one person's work is refused.
+func resolveAuthor(explicit, repoPath string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	email, err := git.GetDefaultAuthor(repoPath)
+	if err != nil || strings.TrimSpace(email) == "" {
+		return "", fmt.Errorf("could not determine author: git config user.email is unset; pass --author")
+	}
+	return email, nil
+}
+
 // warnUnusedFile tells the user when --file cannot take effect, rather than
 // silently writing nothing.
 func warnUnusedFile(output, file string) {
@@ -211,10 +225,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return runTeamAnalysis(paths, team, sinceTime, untilTime)
 	}
 
-	// Get author if not specified
-	authorEmail := author
-	if authorEmail == "" {
-		authorEmail, _ = git.GetDefaultAuthor(paths[0])
+	authorEmail, err := resolveAuthor(author, paths[0])
+	if err != nil {
+		return err
 	}
 
 	// Analyze repositories
