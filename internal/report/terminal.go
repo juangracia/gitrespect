@@ -145,8 +145,10 @@ func renderMetrics(b metrics.Bundle) {
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
 		case c.Samples < 1:
 			fmt.Printf("  └── %sinsufficient data (need 2+ commits on %s)%s\n", colorDim, c.MainBranch, colorReset)
+		case c.MedianDaysBetween < 0.1:
+			fmt.Printf("  └── Multiple commits most active days on %s (%d gaps)\n", c.MainBranch, c.Samples)
 		default:
-			fmt.Printf("  └── Median %.1f days between commits to %s\n", c.MedianDaysBetween, c.MainBranch)
+			fmt.Printf("  └── Median %.1f days between commits to %s (%d gaps)\n", c.MedianDaysBetween, c.MainBranch, c.Samples)
 		}
 		fmt.Println()
 	}
@@ -157,7 +159,7 @@ func renderMetrics(b metrics.Bundle) {
 		case lt.MainBranch == "":
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
 		case lt.Samples == 0:
-			fmt.Printf("  └── %sno merges in period%s\n", colorDim, colorReset)
+			fmt.Printf("  └── %sno merge commits in period (squash-merge repos have none)%s\n", colorDim, colorReset)
 		default:
 			fmt.Printf("  └── Median %.1f days (%d merges analyzed)\n", lt.MedianDays, lt.Samples)
 		}
@@ -167,7 +169,7 @@ func renderMetrics(b metrics.Bundle) {
 		c := b.Churn
 		fmt.Printf("  %sChurn rate:%s\n", colorDim, colorReset)
 		if c.AddedLines == 0 {
-			fmt.Printf("  └── %sno added lines to analyze%s\n", colorDim, colorReset)
+			fmt.Printf("  └── %sno lines added in the %dd window before this period%s\n", colorDim, c.WindowDays, colorReset)
 		} else {
 			fmt.Printf("  └── %.0f%% of added lines rewritten within %d days\n", c.Ratio*100, c.WindowDays)
 		}

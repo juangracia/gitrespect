@@ -39,7 +39,9 @@ var rootCmd = &cobra.Command{
 	Long: `gitrespect analyzes git repositories and provides developer productivity metrics.
 
 Run in any git repository to see your contribution statistics including
-lines added, deleted, net changes, and comparisons to industry benchmarks.`,
+lines added, deleted, net changes, and a comparison against your own prior
+output (personal baseline). Add --metrics for commit size, integration
+cadence, lead time, and churn.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runAnalyze,
 }

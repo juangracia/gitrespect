@@ -2,7 +2,14 @@
 
 > Respect your git work with real metrics
 
+[![CI](https://github.com/juangracia/gitrespect/actions/workflows/ci.yml/badge.svg)](https://github.com/juangracia/gitrespect/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/juangracia/gitrespect)](https://goreportcard.com/report/github.com/juangracia/gitrespect)
+[![Latest release](https://img.shields.io/github/v/release/juangracia/gitrespect)](https://github.com/juangracia/gitrespect/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A fast CLI tool that analyzes git repositories and provides comprehensive developer productivity metrics. **Measure the real impact of AI tools on your productivity**, track team contributions, and benchmark against your own personal baseline.
+
+No agent, no sign-up, no instrumentation: gitrespect reads plain git history, so it works **retroactively** on any repository you already have.
 
 ![gitrespect report](screenshots/report-full.png)
 
@@ -39,7 +46,7 @@ brew install juangracia/gitrespect/gitrespect
 ### Using Go
 
 ```bash
-go install github.com/juangracia/gitrespect@latest
+go install github.com/juangracia/gitrespect/cmd/gitrespect@latest
 ```
 
 ### Download Binary
