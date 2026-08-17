@@ -100,19 +100,71 @@ func TestTimeArgIncludesZoneOffset(t *testing.T) {
 
 func TestAuthorArgsAnchorsFullAddresses(t *testing.T) {
 	got := AuthorArgs("jo@corp.com")
-	want := []string{"--fixed-strings", "--author=<jo@corp.com>"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("AuthorArgs(email) = %v, want %v", got, want)
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"--fixed-strings", "--regexp-ignore-case", "--author=<jo@corp.com>"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("AuthorArgs(email) = %v, missing %q", got, want)
+		}
 	}
 
 	// A name fragment must stay loose so partial matching still works.
-	got = AuthorArgs("alice")
-	if got[1] != "--author=alice" {
+	if got := AuthorArgs("alice"); got[len(got)-1] != "--author=alice" {
 		t.Errorf("AuthorArgs(name) = %v, want an unanchored pattern", got)
 	}
 
 	if AuthorArgs("") != nil {
 		t.Error("AuthorArgs(\"\") should return no flags")
+	}
+}
+
+// Email domains are case-insensitive by spec, so a repo whose ident reads
+// "Alice@Corp.com" must still be found by someone typing it in lower case.
+// Without this the tool reported a confident, silent zero.
+func TestAnalyzeAuthorMatchIsCaseInsensitive(t *testing.T) {
+	r := newRepo(t)
+	r.commitLines("a.txt", 10, "Alice@Corp.com", day(2025, 4, 1))
+
+	since := time.Date(2025, 1, 1, 0, 0, 0, 0, time.Local)
+	until := time.Date(2025, 12, 31, 23, 59, 59, 0, time.Local)
+
+	for _, spelling := range []string{"Alice@Corp.com", "alice@corp.com", "ALICE@CORP.COM"} {
+		stats, err := Analyze(r.path, spelling, since, until, nil)
+		if err != nil {
+			t.Fatalf("Analyze(%q): %v", spelling, err)
+		}
+		if stats.Added != 10 || stats.Commits != 1 {
+			t.Errorf("Analyze(%q) = added %d commits %d, want 10 and 1",
+				spelling, stats.Added, stats.Commits)
+		}
+	}
+}
+
+// core.quotePath wraps non-ASCII paths in quotes with octal escapes, which
+// made every exclude glob miss them.
+func TestAnalyzeExcludesNonASCIIFilenames(t *testing.T) {
+	r := newRepo(t)
+	if err := os.WriteFile(filepath.Join(r.path, "café.txt"), []byte("x\ny\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	r.commitLines("plain.txt", 8, "alice@example.com", day(2025, 4, 1))
+
+	since := time.Date(2025, 1, 1, 0, 0, 0, 0, time.Local)
+	until := time.Date(2025, 12, 31, 23, 59, 59, 0, time.Local)
+
+	all, err := Analyze(r.path, "alice@example.com", since, until, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Added != 10 {
+		t.Fatalf("Added without exclude = %d, want 10", all.Added)
+	}
+
+	filtered, err := Analyze(r.path, "alice@example.com", since, until, []string{"*.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Added != 0 {
+		t.Errorf("Added with *.txt exclude = %d, want 0 (accented name must match)", filtered.Added)
 	}
 }
 
@@ -171,6 +223,51 @@ func TestRenamePaths(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestNormalizePattern(t *testing.T) {
+	tests := map[string]string{
+		"./vendor/*": "vendor/*",
+		"vendor/**":  "vendor/*",
+		"vendor/*":   "vendor/*",
+		"**/*.go":    "*/*.go",
+		"*.pb.go":    "*.pb.go",
+		"./":         "./",
+	}
+	for in, want := range tests {
+		if got := normalizePattern(in); got != want {
+			t.Errorf("normalizePattern(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// filepath.Match reports an uncompilable glob as an error, not a non-match, so
+// an unusable pattern would silently exclude nothing.
+func TestValidateExcludePatterns(t *testing.T) {
+	if err := ValidateExcludePatterns([]string{"vendor/*", "*.go", "./x/*"}); err != nil {
+		t.Errorf("valid patterns rejected: %v", err)
+	}
+	err := ValidateExcludePatterns([]string{"vendor/*", "[invalid"})
+	if err == nil {
+		t.Fatal("ValidateExcludePatterns accepted \"[invalid\"")
+	}
+	if !strings.Contains(err.Error(), "[invalid") {
+		t.Errorf("error should name the offending pattern, got %v", err)
+	}
+}
+
+// "vendor/**" reads as more explicit than "vendor/*" but filepath.Match has no
+// globstar, so it used to exclude nothing at all.
+func TestShouldExcludePatternForms(t *testing.T) {
+	const deep = "vendor/deep/lib.go"
+	for _, pattern := range []string{"vendor/*", "vendor/**", "./vendor/*", "./vendor/**"} {
+		if !ShouldExclude(deep, []string{pattern}) {
+			t.Errorf("ShouldExclude(%q, %q) = false, want true", deep, pattern)
+		}
+	}
+	if ShouldExclude("src/main.go", []string{"vendor/**"}) {
+		t.Error("vendor/** should not exclude src/main.go")
 	}
 }
 

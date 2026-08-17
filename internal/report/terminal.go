@@ -77,12 +77,12 @@ func Terminal(stats git.RepoStats, breakdown string, bundle metrics.Bundle) erro
 	// Daily average - show actual activity period if different from date range
 	if !stats.FirstCommit.IsZero() && !stats.LastCommit.IsZero() {
 		activityRange := fmt.Sprintf("%s to %s", stats.FirstCommit.Format("Jan 2 2006"), stats.LastCommit.Format("Jan 2 2006"))
-		fmt.Printf("  %sDaily avg:%s %.0f lines/day (%d working days)\n",
-			colorDim, colorReset, locPerDay, workingDays)
+		fmt.Printf("  %sDaily avg:%s %s lines/day (%d working days)\n",
+			colorDim, colorReset, formatRate(locPerDay), workingDays)
 		fmt.Printf("  %sActivity:%s  %s\n", colorDim, colorReset, activityRange)
 	} else {
-		fmt.Printf("  %sDaily avg:%s %.0f lines/day (%d working days)\n",
-			colorDim, colorReset, locPerDay, workingDays)
+		fmt.Printf("  %sDaily avg:%s %s lines/day (%d working days)\n",
+			colorDim, colorReset, formatRate(locPerDay), workingDays)
 	}
 	fmt.Println()
 
@@ -182,7 +182,7 @@ func renderMetrics(b metrics.Bundle) {
 		case lt.MainBranch == "":
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
 		case lt.Samples == 0:
-			fmt.Printf("  └── %sno signal: squash merges rewrite both dates, leaving nothing to measure%s\n", colorDim, colorReset)
+			fmt.Printf("  └── %sno signal: no merge commits, and too few commits landed later than they were authored%s\n", colorDim, colorReset)
 		case lt.Method == metrics.LeadTimeAuthored:
 			fmt.Printf("  └── Median %.1f days (%d %s, authored → landed)\n",
 				lt.MedianDays, lt.Samples, pluralize(lt.Samples, "commit"))
@@ -291,6 +291,25 @@ func CompareTerminal(comparison git.CompareStats) error {
 	fmt.Println()
 
 	return nil
+}
+
+// formatRate renders a per-day rate without rounding a small but real number
+// down to a flat "0", which reads as "shipped nothing".
+func formatRate(v float64) string {
+	abs := v
+	if abs < 0 {
+		abs = -abs
+	}
+	switch {
+	case abs == 0:
+		return "0"
+	case abs < 0.1:
+		return fmt.Sprintf("%.2f", v)
+	case abs < 10:
+		return fmt.Sprintf("%.1f", v)
+	default:
+		return fmt.Sprintf("%.0f", v)
+	}
 }
 
 // pluralize returns word or its plural depending on n.
@@ -521,8 +540,8 @@ func TeamTerminal(stats git.TeamStats, breakdown string, bundles map[string]metr
 		stats.TotalCommits)
 	fmt.Println()
 
-	fmt.Printf("  %sTeam daily avg:%s %.0f lines/day (%d working days)\n",
-		colorDim, colorReset, locPerDay, workingDays)
+	fmt.Printf("  %sTeam daily avg:%s %s lines/day (%d working days)\n",
+		colorDim, colorReset, formatRate(locPerDay), workingDays)
 	fmt.Println()
 
 	// Member breakdown - sort by net lines descending

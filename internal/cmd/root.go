@@ -191,6 +191,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	if err := validateOutputFlags(breakdown, output, theme); err != nil {
 		return err
 	}
+	if err := git.ValidateExcludePatterns(exclude); err != nil {
+		return err
+	}
 	warnUnusedFile(output, file)
 
 	if cmd.Flags().Changed("year") && year <= 0 {

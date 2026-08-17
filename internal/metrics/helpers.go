@@ -52,7 +52,7 @@ func median(xs []float64) float64 {
 // sumNumstat returns (totalAdded, totalDeleted) for the author's commits in the window,
 // excluding binary files and excluded patterns.
 func sumNumstat(repoPath, author string, since, until time.Time, exclude []string) (int, int, error) {
-	args := []string{"-C", repoPath, "log"}
+	args := git.LogArgs(repoPath)
 	args = append(args, git.AuthorArgs(author)...)
 	args = append(args,
 		"--since="+git.TimeArg(since),

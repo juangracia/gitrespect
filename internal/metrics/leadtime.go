@@ -113,10 +113,22 @@ func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime,
 	return authoredLeadTime(repoPath, author, main, since, until)
 }
 
+// minAuthoredSamples is the number of rewritten commits required before an
+// authored-to-landed median is reported. A single cherry-pick of old work
+// would otherwise become the entire sample.
+const minAuthoredSamples = 3
+
 // authoredLeadTime derives lead time from the gap between when a commit was
 // authored and when it landed on main. Only commits whose committer date is
 // later than their author date carry a signal; a commit made directly on main
-// has identical dates and is correctly excluded rather than counted as zero.
+// has identical dates.
+//
+// That discriminator detects a rewritten committer date, which a rebase or
+// patch workflow produces but so do cherry-picks, amends and whole-history
+// rewrites such as filter-repo. Two guards keep those from being reported as
+// lead time: samples longer than the analysis window are discarded, since work
+// that took longer than the period asked about did not flow through it, and a
+// median is only reported once several samples agree.
 func authoredLeadTime(repoPath, author, main string, since, until time.Time) (LeadTime, error) {
 	args := []string{"-C", repoPath, "log", main, "--no-merges"}
 	args = append(args, git.AuthorArgs(author)...)
@@ -130,6 +142,8 @@ func authoredLeadTime(repoPath, author, main string, since, until time.Time) (Le
 		return LeadTime{MainBranch: main}, fmt.Errorf("git log: %w", err)
 	}
 
+	windowDays := until.Sub(since).Hours() / 24
+
 	var days []float64
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
@@ -141,10 +155,16 @@ func authoredLeadTime(repoPath, author, main string, since, until time.Time) (Le
 		if err1 != nil || err2 != nil || ct <= at {
 			continue
 		}
-		days = append(days, float64(ct-at)/86400.0)
+		delta := float64(ct-at) / 86400.0
+		// A cherry-pick or history rewrite shows a gap far larger than the
+		// period under analysis. That is not this period's lead time.
+		if windowDays > 0 && delta > windowDays {
+			continue
+		}
+		days = append(days, delta)
 	}
 
-	if len(days) == 0 {
+	if len(days) < minAuthoredSamples {
 		return LeadTime{MainBranch: main}, nil
 	}
 	return LeadTime{

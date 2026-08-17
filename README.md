@@ -337,6 +337,11 @@ leaves nothing in git history to measure and gitrespect will say so rather
 than report a misleading zero. This is a limitation of git history, not a bug.
 The other metrics are unaffected.
 
+The fallback deliberately discards gaps longer than the period being analysed
+and needs several samples before reporting, because a cherry-pick or a
+history rewrite such as `filter-repo` also moves the committer date and would
+otherwise masquerade as a very long lead time.
+
 ### Export to JSON
 
 ```bash
@@ -382,11 +387,16 @@ Dates accept `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, or relative forms like
 `"30 days ago"`. `--until` is inclusive: `--until=2025-03-05` covers all of
 5 March, and `--until=2025-03` covers all of March.
 
+Author matching is case-insensitive, and a full address is matched exactly, so
+`-a jo@corp.com` will not also pick up `bojo@corp.com`. A bare name fragment
+like `-a alice` still matches loosely. `--author` and `--team` are mutually
+exclusive.
+
 `--exclude` patterns are matched against renamed files on both their old and
 their new path, so `-e 'vendor/*'` still excludes a file that was moved into or
-out of `vendor/`.
-
-`--author` and `--team` are mutually exclusive.
+out of `vendor/`. A directory pattern excludes the whole subtree, `**` is
+treated as `*`, a leading `./` is ignored, and an uncompilable pattern is
+rejected rather than silently matching nothing.
 
 Colour is disabled automatically when output is piped or redirected, and when
 [`NO_COLOR`](https://no-color.org) is set.
