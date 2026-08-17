@@ -92,6 +92,9 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	if err := validateOutputFlags("", output, theme); err != nil {
 		return err
 	}
+	if err := git.ValidateExcludePatterns(exclude); err != nil {
+		return err
+	}
 
 	beforeStart, beforeEnd, err := parsePeriod(beforePeriod)
 	if err != nil {

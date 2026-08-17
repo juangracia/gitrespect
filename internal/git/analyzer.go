@@ -103,7 +103,7 @@ func Analyze(repoPath, author string, since, until time.Time, excludePatterns []
 	}
 
 	// Get commit stats with numstat
-	args := []string{"-C", repoPath, "log"}
+	args := LogArgs(repoPath)
 	args = append(args, AuthorArgs(author)...)
 	args = append(args,
 		"--since="+TimeArg(since),
@@ -322,6 +322,12 @@ func GetDefaultAuthor(repoPath string) (string, error) {
 // team. When the input is a complete address, anchor it on the angle brackets
 // git puts around the email. --fixed-strings additionally stops characters
 // like "." in an address being treated as regex wildcards.
+//
+// Matching is case-insensitive. Email domains are case-insensitive by spec and
+// local parts are in practice, so a repo whose ident reads "Alice@Corp.com"
+// must still be found by someone typing their address in lower case. Without
+// this the tool reports a confident zero, which is indistinguishable from
+// having done no work.
 func AuthorArgs(author string) []string {
 	if author == "" {
 		return nil
@@ -330,7 +336,7 @@ func AuthorArgs(author string) []string {
 	if looksLikeEmail(author) {
 		pattern = "<" + author + ">"
 	}
-	return []string{"--fixed-strings", "--author=" + pattern}
+	return []string{"--fixed-strings", "--regexp-ignore-case", "--author=" + pattern}
 }
 
 // looksLikeEmail reports whether s is a complete address rather than a name
@@ -581,6 +587,50 @@ func cleanRenamePath(p string) string {
 	return strings.TrimPrefix(path.Clean(p), "/")
 }
 
+// LogArgs starts a `git log` argument list for a repository, for callers that
+// parse filenames out of --numstat.
+//
+// core.quotePath defaults to true, which makes git wrap any path containing
+// non-ASCII or control characters in double quotes and octal-escape the bytes:
+// "caf\303\251.txt". The surrounding quotes make every exclude glob miss, so
+// accented and unusual filenames slipped past --exclude entirely.
+func LogArgs(repoPath string) []string {
+	return []string{"-c", "core.quotePath=false", "-C", repoPath, "log"}
+}
+
+// ValidateExcludePatterns rejects globs that filepath.Match cannot compile.
+// Match reports a bad pattern as an error rather than a non-match, and every
+// call site here ignores that error, so an unusable pattern would otherwise
+// exclude nothing while the user believed they had filtered.
+func ValidateExcludePatterns(patterns []string) error {
+	for _, p := range patterns {
+		if _, err := path.Match(normalizePattern(p), ""); err != nil {
+			return fmt.Errorf("invalid --exclude pattern %q: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// normalizePattern tidies a user-supplied glob. numstat paths are
+// repo-relative with no leading "./", so a tab-completed "./vendor/*" would
+// never match anything. "**" is folded to "*" because there is no globstar,
+// and the directory fast path below already recurses.
+//
+// This uses path rather than filepath deliberately: git always reports
+// forward-slash paths, including on Windows, where filepath.Clean would
+// rewrite the separator to a backslash and break every directory pattern.
+func normalizePattern(pattern string) string {
+	pattern = strings.ReplaceAll(pattern, "**", "*")
+	if pattern == "" {
+		return pattern
+	}
+	cleaned := path.Clean(pattern)
+	if cleaned == "." {
+		return pattern
+	}
+	return cleaned
+}
+
 // ShouldExclude reports whether filename matches any of the glob patterns.
 // Renames are matched on both their old and new path.
 func ShouldExclude(filename string, patterns []string) bool {
@@ -595,17 +645,22 @@ func ShouldExclude(filename string, patterns []string) bool {
 	return false
 }
 
+// matchesAny uses path rather than filepath throughout: git reports
+// forward-slash paths on every platform, and filepath's separator is a
+// backslash on Windows, which made every directory pattern fail there.
 func matchesAny(filename string, patterns []string) bool {
-	for _, pattern := range patterns {
+	for _, raw := range patterns {
+		pattern := normalizePattern(raw)
 		// Try matching the full path
-		if matched, _ := filepath.Match(pattern, filename); matched {
+		if matched, _ := path.Match(pattern, filename); matched {
 			return true
 		}
 		// Also try matching just the base name
-		if matched, _ := filepath.Match(pattern, filepath.Base(filename)); matched {
+		if matched, _ := path.Match(pattern, path.Base(filename)); matched {
 			return true
 		}
-		// Handle directory patterns (e.g., "vendor/*")
+		// Handle directory patterns (e.g., "vendor/*"), which exclude the whole
+		// subtree rather than only its immediate children.
 		if strings.Contains(pattern, "/") {
 			// Check if filename starts with the directory prefix
 			parts := strings.SplitN(pattern, "/", 2)
@@ -613,7 +668,7 @@ func matchesAny(filename string, patterns []string) bool {
 				if parts[1] == "*" {
 					return true
 				}
-				if matched, _ := filepath.Match(parts[1], filename[len(parts[0])+1:]); matched {
+				if matched, _ := path.Match(parts[1], filename[len(parts[0])+1:]); matched {
 					return true
 				}
 			}
@@ -622,9 +677,9 @@ func matchesAny(filename string, patterns []string) bool {
 	return false
 }
 
-// IsGitRepo checks if a path is a git repository
-func IsGitRepo(path string) bool {
-	gitDir := filepath.Join(path, ".git")
+// IsGitRepo checks if a directory is a git repository
+func IsGitRepo(dir string) bool {
+	gitDir := filepath.Join(dir, ".git")
 	info, err := os.Stat(gitDir)
 	if err != nil {
 		return false
@@ -633,11 +688,11 @@ func IsGitRepo(path string) bool {
 }
 
 // FindRepos finds all git repositories in a directory (recursively)
-func FindRepos(path string) ([]string, error) {
+func FindRepos(dir string) ([]string, error) {
 	var repos []string
 
 	// Recursively scan for git repos (including immediate subdirectories)
-	err := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip directories we can't access
 		}
@@ -647,7 +702,7 @@ func FindRepos(path string) ([]string, error) {
 		}
 
 		// Skip hidden directories (except .git check happens via IsGitRepo)
-		if strings.HasPrefix(d.Name(), ".") && p != path {
+		if strings.HasPrefix(d.Name(), ".") && p != dir {
 			return filepath.SkipDir
 		}
 
@@ -658,7 +713,7 @@ func FindRepos(path string) ([]string, error) {
 				return filepath.SkipDir // Don't recurse into valid git repos
 			}
 			// Invalid/empty git repo at root - continue scanning subdirectories
-			if p == path {
+			if p == dir {
 				return nil
 			}
 			return filepath.SkipDir
