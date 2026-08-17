@@ -604,7 +604,7 @@ func LogArgs(repoPath string) []string {
 // exclude nothing while the user believed they had filtered.
 func ValidateExcludePatterns(patterns []string) error {
 	for _, p := range patterns {
-		if _, err := filepath.Match(normalizePattern(p), ""); err != nil {
+		if _, err := path.Match(normalizePattern(p), ""); err != nil {
 			return fmt.Errorf("invalid --exclude pattern %q: %w", p, err)
 		}
 	}
@@ -613,14 +613,18 @@ func ValidateExcludePatterns(patterns []string) error {
 
 // normalizePattern tidies a user-supplied glob. numstat paths are
 // repo-relative with no leading "./", so a tab-completed "./vendor/*" would
-// never match anything. "**" is folded to "*" because filepath.Match has no
-// globstar, and the directory fast path below already recurses.
+// never match anything. "**" is folded to "*" because there is no globstar,
+// and the directory fast path below already recurses.
+//
+// This uses path rather than filepath deliberately: git always reports
+// forward-slash paths, including on Windows, where filepath.Clean would
+// rewrite the separator to a backslash and break every directory pattern.
 func normalizePattern(pattern string) string {
 	pattern = strings.ReplaceAll(pattern, "**", "*")
 	if pattern == "" {
 		return pattern
 	}
-	cleaned := filepath.Clean(pattern)
+	cleaned := path.Clean(pattern)
 	if cleaned == "." {
 		return pattern
 	}
@@ -641,15 +645,18 @@ func ShouldExclude(filename string, patterns []string) bool {
 	return false
 }
 
+// matchesAny uses path rather than filepath throughout: git reports
+// forward-slash paths on every platform, and filepath's separator is a
+// backslash on Windows, which made every directory pattern fail there.
 func matchesAny(filename string, patterns []string) bool {
 	for _, raw := range patterns {
 		pattern := normalizePattern(raw)
 		// Try matching the full path
-		if matched, _ := filepath.Match(pattern, filename); matched {
+		if matched, _ := path.Match(pattern, filename); matched {
 			return true
 		}
 		// Also try matching just the base name
-		if matched, _ := filepath.Match(pattern, filepath.Base(filename)); matched {
+		if matched, _ := path.Match(pattern, path.Base(filename)); matched {
 			return true
 		}
 		// Handle directory patterns (e.g., "vendor/*"), which exclude the whole
@@ -661,7 +668,7 @@ func matchesAny(filename string, patterns []string) bool {
 				if parts[1] == "*" {
 					return true
 				}
-				if matched, _ := filepath.Match(parts[1], filename[len(parts[0])+1:]); matched {
+				if matched, _ := path.Match(parts[1], filename[len(parts[0])+1:]); matched {
 					return true
 				}
 			}
@@ -670,9 +677,9 @@ func matchesAny(filename string, patterns []string) bool {
 	return false
 }
 
-// IsGitRepo checks if a path is a git repository
-func IsGitRepo(path string) bool {
-	gitDir := filepath.Join(path, ".git")
+// IsGitRepo checks if a directory is a git repository
+func IsGitRepo(dir string) bool {
+	gitDir := filepath.Join(dir, ".git")
 	info, err := os.Stat(gitDir)
 	if err != nil {
 		return false
@@ -681,11 +688,11 @@ func IsGitRepo(path string) bool {
 }
 
 // FindRepos finds all git repositories in a directory (recursively)
-func FindRepos(path string) ([]string, error) {
+func FindRepos(dir string) ([]string, error) {
 	var repos []string
 
 	// Recursively scan for git repos (including immediate subdirectories)
-	err := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip directories we can't access
 		}
@@ -695,7 +702,7 @@ func FindRepos(path string) ([]string, error) {
 		}
 
 		// Skip hidden directories (except .git check happens via IsGitRepo)
-		if strings.HasPrefix(d.Name(), ".") && p != path {
+		if strings.HasPrefix(d.Name(), ".") && p != dir {
 			return filepath.SkipDir
 		}
 
@@ -706,7 +713,7 @@ func FindRepos(path string) ([]string, error) {
 				return filepath.SkipDir // Don't recurse into valid git repos
 			}
 			// Invalid/empty git repo at root - continue scanning subdirectories
-			if p == path {
+			if p == dir {
 				return nil
 			}
 			return filepath.SkipDir
