@@ -104,6 +104,9 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(team) > 0 {
+		if err := checkTeamConflicts(author); err != nil {
+			return err
+		}
 		beforeTeam, _ := buildTeamStats(paths, team, beforeStart, beforeEnd)
 		afterTeam, _ := buildTeamStats(paths, team, afterStart, afterEnd)
 		if len(beforeTeam.Members) == 0 && len(afterTeam.Members) == 0 {

@@ -116,6 +116,15 @@ func validateOutputFlags(breakdown, output, theme string) error {
 	return nil
 }
 
+// checkTeamConflicts rejects flags that team mode would otherwise ignore in
+// silence, so a user who thinks they are filtering actually is.
+func checkTeamConflicts(author string) error {
+	if author != "" {
+		return fmt.Errorf("--author and --team are mutually exclusive: pass one or the other")
+	}
+	return nil
+}
+
 // resolveAuthor returns the explicit --author, or falls back to the repo's
 // configured user.email. An empty author would match every commit in the
 // repository, so report the whole repo as one person's work is refused.
@@ -222,6 +231,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 
 	// Check if team mode is enabled
 	if len(team) > 0 {
+		if err := checkTeamConflicts(author); err != nil {
+			return err
+		}
+		if perRepo {
+			fmt.Fprintln(os.Stderr, "note: --per-repo is not applied in team mode")
+		}
 		return runTeamAnalysis(paths, team, sinceTime, untilTime)
 	}
 

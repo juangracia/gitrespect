@@ -382,6 +382,12 @@ Dates accept `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, or relative forms like
 `"30 days ago"`. `--until` is inclusive: `--until=2025-03-05` covers all of
 5 March, and `--until=2025-03` covers all of March.
 
+`--exclude` patterns are matched against renamed files on both their old and
+their new path, so `-e 'vendor/*'` still excludes a file that was moved into or
+out of `vendor/`.
+
+`--author` and `--team` are mutually exclusive.
+
 Colour is disabled automatically when output is piped or redirected, and when
 [`NO_COLOR`](https://no-color.org) is set.
 
