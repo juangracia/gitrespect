@@ -12,24 +12,25 @@ import (
 )
 
 type HTMLData struct {
-	Author      string
-	Since       string
-	Until       string
-	Added       int
-	Deleted     int
-	Net         int
-	Commits     int
-	WorkingDays int
-	PerDay      float64
-	Monthly     []MonthlyHTMLData
-	HasMonthly  bool
-	Theme       string
-	IsDark      bool
-	Baseline    *BaselineHTMLData
-	CommitSize  *CommitSizeHTMLData
-	Cadence     *CadenceHTMLData
-	LeadTime    *LeadTimeHTMLData
-	Churn       *ChurnHTMLData
+	Author         string
+	Since          string
+	Until          string
+	Added          int
+	Deleted        int
+	Net            int
+	Commits        int
+	WorkingDays    int
+	PerDay         float64
+	Monthly        []MonthlyHTMLData
+	HasMonthly     bool
+	BreakdownTitle string
+	Theme          string
+	IsDark         bool
+	Baseline       *BaselineHTMLData
+	CommitSize     *CommitSizeHTMLData
+	Cadence        *CadenceHTMLData
+	LeadTime       *LeadTimeHTMLData
+	Churn          *ChurnHTMLData
 }
 
 type BaselineHTMLData struct {
@@ -64,12 +65,51 @@ type ChurnHTMLData struct {
 }
 
 type MonthlyHTMLData struct {
-	Month   string
-	Year    int
+	Label   string
 	Added   int
 	Deleted int
 	Net     int
 	IsMax   bool
+}
+
+// buildBreakdownHTML converts stats into breakdown rows for the templates,
+// flagging the strongest period so it can be highlighted.
+func buildBreakdownHTML(stats git.RepoStats, granularity string) []MonthlyHTMLData {
+	rows := git.Breakdown(stats, granularity)
+	if len(rows) == 0 {
+		return nil
+	}
+	maxNet := 0
+	maxKey := ""
+	for _, r := range rows {
+		if r.Net > maxNet {
+			maxNet = r.Net
+			maxKey = r.Key
+		}
+	}
+	out := make([]MonthlyHTMLData, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, MonthlyHTMLData{
+			Label:   r.Label,
+			Added:   r.Added,
+			Deleted: r.Deleted,
+			Net:     r.Net,
+			IsMax:   r.Key == maxKey,
+		})
+	}
+	return out
+}
+
+// breakdownHTMLTitle names the breakdown section for the requested granularity.
+func breakdownHTMLTitle(granularity string) string {
+	switch granularity {
+	case "weekly":
+		return "Weekly Breakdown"
+	case "daily":
+		return "Daily Breakdown"
+	default:
+		return "Monthly Breakdown"
+	}
 }
 
 type CompareHTMLData struct {
@@ -85,6 +125,18 @@ type CompareHTMLData struct {
 	ChangeEmoji  string
 	Theme        string
 	IsDark       bool
+	// Members is populated only for team comparisons.
+	Members []CompareMemberHTMLData
+}
+
+type CompareMemberHTMLData struct {
+	Email      string
+	BeforeNet  int
+	AfterNet   int
+	Multiplier float64
+	// HasBaseline is false when the member produced nothing in the before
+	// period, so no multiplier is meaningful.
+	HasBaseline bool
 }
 
 const htmlTemplate = `<!DOCTYPE html>
@@ -465,11 +517,11 @@ const htmlTemplate = `<!DOCTYPE html>
 
         {{if .HasMonthly}}
         <div class="section">
-            <div class="section-title">Monthly Breakdown</div>
+            <div class="section-title">{{.BreakdownTitle}}</div>
             <table>
                 <thead>
                     <tr>
-                        <th>Month</th>
+                        <th>Period</th>
                         <th>Added</th>
                         <th>Deleted</th>
                         <th>Net</th>
@@ -478,7 +530,7 @@ const htmlTemplate = `<!DOCTYPE html>
                 <tbody>
                     {{range .Monthly}}
                     <tr{{if .IsMax}} class="max-row"{{end}}>
-                        <td>{{.Month}} {{.Year}}</td>
+                        <td>{{.Label}}</td>
                         <td>+{{.Added}}</td>
                         <td>-{{.Deleted}}</td>
                         <td>{{.Net}}</td>
@@ -622,6 +674,35 @@ const compareHtmlTemplate = `<!DOCTYPE html>
             color: var(--accent);
             text-decoration: none;
         }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 28px;
+            font-size: 14px;
+        }
+
+        th {
+            text-align: left;
+            padding: 10px 8px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        td {
+            padding: 10px 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        td:not(:first-child), th:not(:first-child) {
+            text-align: right;
+            font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+        }
     </style>
 </head>
 <body>
@@ -647,6 +728,24 @@ const compareHtmlTemplate = `<!DOCTYPE html>
             <div class="result-label">productivity increase</div>
         </div>
 
+        {{if .Members}}
+        <table>
+            <thead>
+                <tr><th>Contributor</th><th>Before</th><th>After</th><th>Change</th></tr>
+            </thead>
+            <tbody>
+                {{range .Members}}
+                <tr>
+                    <td>{{.Email}}</td>
+                    <td>{{.BeforeNet}}</td>
+                    <td>{{.AfterNet}}</td>
+                    <td>{{if .HasBaseline}}{{printf "%.1f" .Multiplier}}x{{else}}n/a{{end}}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        {{end}}
+
         <footer>
             Generated by <a href="https://github.com/juangracia/gitrespect">gitrespect</a>
         </footer>
@@ -670,7 +769,6 @@ func HTML(stats git.RepoStats, filename string, breakdown string, theme string, 
 		Commits:     stats.Commits,
 		WorkingDays: workingDays,
 		PerDay:      locPerDay,
-		HasMonthly:  breakdown == "monthly" && len(stats.Monthly) > 0,
 		Theme:       theme,
 		IsDark:      isDark,
 	}
@@ -714,32 +812,9 @@ func HTML(stats git.RepoStats, filename string, breakdown string, theme string, 
 		}
 	}
 
-	// Add monthly if needed
-	if data.HasMonthly {
-		var months []string
-		maxNet := 0
-		maxMonth := ""
-		for m, ms := range stats.Monthly {
-			months = append(months, m)
-			if ms.Net > maxNet {
-				maxNet = ms.Net
-				maxMonth = m
-			}
-		}
-		sort.Strings(months)
-
-		for _, m := range months {
-			ms := stats.Monthly[m]
-			data.Monthly = append(data.Monthly, MonthlyHTMLData{
-				Month:   getMonthName(ms.Month),
-				Year:    ms.Year,
-				Added:   ms.Added,
-				Deleted: ms.Deleted,
-				Net:     ms.Net,
-				IsMax:   m == maxMonth,
-			})
-		}
-	}
+	data.Monthly = buildBreakdownHTML(stats, breakdown)
+	data.HasMonthly = len(data.Monthly) > 0
+	data.BreakdownTitle = breakdownHTMLTitle(breakdown)
 
 	tmpl, err := template.New("report").Parse(htmlTemplate)
 	if err != nil {
@@ -748,6 +823,88 @@ func HTML(stats git.RepoStats, filename string, breakdown string, theme string, 
 
 	if filename == "" {
 		filename = "gitrespect-report.html"
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer f.Close()
+
+	if err := tmpl.Execute(f, data); err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	fmt.Printf("✓ Report saved to %s\n", filename)
+	return nil
+}
+
+// TeamCompareHTML renders a before/after comparison for a whole team, with a
+// per-member table under the headline multiplier.
+func TeamCompareHTML(c git.TeamCompareStats, filename string, theme string) error {
+	beforeDays := git.WorkingDays(c.Before.Since, c.Before.Until)
+	afterDays := git.WorkingDays(c.After.Since, c.After.Until)
+
+	beforePerDay := float64(c.Before.TotalNet) / float64(beforeDays)
+	afterPerDay := float64(c.After.TotalNet) / float64(afterDays)
+	multiplier := benchmark.CalculateMultiplier(beforePerDay, afterPerDay)
+
+	data := CompareHTMLData{
+		BeforeLabel:  c.BeforeLabel,
+		AfterLabel:   c.AfterLabel,
+		BeforeNet:    c.Before.TotalNet,
+		AfterNet:     c.After.TotalNet,
+		BeforeDays:   beforeDays,
+		AfterDays:    afterDays,
+		BeforePerDay: beforePerDay,
+		AfterPerDay:  afterPerDay,
+		Multiplier:   multiplier,
+		ChangeEmoji:  changeEmoji(multiplier),
+		Theme:        theme,
+		IsDark:       theme != "light",
+	}
+
+	for _, email := range c.MemberEmails() {
+		before := c.Before.Members[email]
+		after := c.After.Members[email]
+		row := CompareMemberHTMLData{
+			Email:     email,
+			BeforeNet: before.Net,
+			AfterNet:  after.Net,
+		}
+		if before.Net > 0 {
+			row.HasBaseline = true
+			row.Multiplier = benchmark.CalculateMultiplier(
+				float64(before.Net)/float64(beforeDays),
+				float64(after.Net)/float64(afterDays),
+			)
+		}
+		data.Members = append(data.Members, row)
+	}
+
+	if filename == "" {
+		filename = "gitrespect-team-compare.html"
+	}
+	return renderCompareHTML(data, filename)
+}
+
+// changeEmoji picks a headline emoji for a productivity multiplier.
+func changeEmoji(multiplier float64) string {
+	switch {
+	case multiplier >= 5:
+		return "🚀"
+	case multiplier >= 2:
+		return "📈"
+	default:
+		return ""
+	}
+}
+
+// renderCompareHTML writes the shared comparison template to filename.
+func renderCompareHTML(data CompareHTMLData, filename string) error {
+	tmpl, err := template.New("compare").Parse(compareHtmlTemplate)
+	if err != nil {
+		return fmt.Errorf("failed to parse template: %w", err)
 	}
 
 	f, err := os.Create(filename)
@@ -773,15 +930,6 @@ func CompareHTML(comparison git.CompareStats, filename string, theme string) err
 
 	multiplier := benchmark.CalculateMultiplier(beforePerDay, afterPerDay)
 
-	emoji := ""
-	if multiplier >= 5 {
-		emoji = "🚀"
-	} else if multiplier >= 2 {
-		emoji = "📈"
-	}
-
-	isDark := theme != "light"
-
 	data := CompareHTMLData{
 		BeforeLabel:  comparison.BeforeLabel,
 		AfterLabel:   comparison.AfterLabel,
@@ -792,32 +940,15 @@ func CompareHTML(comparison git.CompareStats, filename string, theme string) err
 		BeforePerDay: beforePerDay,
 		AfterPerDay:  afterPerDay,
 		Multiplier:   multiplier,
-		ChangeEmoji:  emoji,
+		ChangeEmoji:  changeEmoji(multiplier),
 		Theme:        theme,
-		IsDark:       isDark,
-	}
-
-	tmpl, err := template.New("compare").Parse(compareHtmlTemplate)
-	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
+		IsDark:       theme != "light",
 	}
 
 	if filename == "" {
 		filename = "gitrespect-compare.html"
 	}
-
-	f, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
-	}
-	defer f.Close()
-
-	if err := tmpl.Execute(f, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	fmt.Printf("✓ Report saved to %s\n", filename)
-	return nil
+	return renderCompareHTML(data, filename)
 }
 
 type TeamHTMLData struct {
@@ -832,6 +963,7 @@ type TeamHTMLData struct {
 	Members          []TeamMemberHTMLData
 	HasMonthly       bool
 	Monthly          []MonthlyHTMLData
+	BreakdownTitle   string
 	HasMemberMetrics bool
 	Theme            string
 	IsDark           bool
@@ -1006,12 +1138,12 @@ const teamHtmlTemplate = `<!DOCTYPE html>
 
         {{if .HasMonthly}}
         <div class="section">
-            <div class="section-title">Team Monthly Breakdown</div>
+            <div class="section-title">{{.BreakdownTitle}}</div>
             <table>
-                <thead><tr><th>Month</th><th>Added</th><th>Deleted</th><th>Net</th></tr></thead>
+                <thead><tr><th>Period</th><th>Added</th><th>Deleted</th><th>Net</th></tr></thead>
                 <tbody>
                     {{range .Monthly}}
-                    <tr{{if .IsMax}} class="top-row"{{end}}><td>{{.Month}} {{.Year}}</td><td>+{{.Added}}</td><td>-{{.Deleted}}</td><td>{{.Net}}</td></tr>
+                    <tr{{if .IsMax}} class="top-row"{{end}}><td>{{.Label}}</td><td>+{{.Added}}</td><td>-{{.Deleted}}</td><td>{{.Net}}</td></tr>
                     {{end}}
                 </tbody>
             </table>
@@ -1091,32 +1223,10 @@ func TeamHTML(stats git.TeamStats, filename string, theme string, breakdown stri
 		data.Members = append(data.Members, md)
 	}
 
-	// Team-wide monthly breakdown
-	if breakdown == "monthly" && len(stats.Monthly) > 0 {
-		var months []string
-		maxNet := 0
-		maxMonth := ""
-		for m, ms := range stats.Monthly {
-			months = append(months, m)
-			if ms.Net > maxNet {
-				maxNet = ms.Net
-				maxMonth = m
-			}
-		}
-		sort.Strings(months)
-		for _, m := range months {
-			ms := stats.Monthly[m]
-			data.Monthly = append(data.Monthly, MonthlyHTMLData{
-				Month:   getMonthName(ms.Month),
-				Year:    ms.Year,
-				Added:   ms.Added,
-				Deleted: ms.Deleted,
-				Net:     ms.Net,
-				IsMax:   m == maxMonth,
-			})
-		}
-		data.HasMonthly = len(data.Monthly) > 0
-	}
+	// Team-wide breakdown
+	data.Monthly = buildBreakdownHTML(git.RepoStats{Monthly: stats.Monthly, Daily: stats.Daily}, breakdown)
+	data.HasMonthly = len(data.Monthly) > 0
+	data.BreakdownTitle = "Team " + breakdownHTMLTitle(breakdown)
 
 	tmpl, err := template.New("team").Parse(teamHtmlTemplate)
 	if err != nil {

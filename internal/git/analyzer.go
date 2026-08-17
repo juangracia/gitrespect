@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,11 +24,22 @@ type RepoStats struct {
 	Commits      int
 	FilesChanged int
 	Monthly      map[string]MonthStats
+	Daily        map[string]DayStats
 }
 
 type MonthStats struct {
 	Year    int
 	Month   int
+	Added   int
+	Deleted int
+	Net     int
+	Commits int
+}
+
+// DayStats aggregates one calendar day. Weekly and daily breakdowns are
+// derived from these buckets.
+type DayStats struct {
+	Date    string // YYYY-MM-DD
 	Added   int
 	Deleted int
 	Net     int
@@ -41,6 +53,32 @@ type CompareStats struct {
 	AfterLabel  string
 }
 
+// TeamCompareStats holds a before/after comparison for a group of authors,
+// used to audit how a tooling change landed across a whole team.
+type TeamCompareStats struct {
+	Before      TeamStats
+	After       TeamStats
+	BeforeLabel string
+	AfterLabel  string
+}
+
+// Members returns the union of author emails seen in either period, sorted.
+func (t TeamCompareStats) MemberEmails() []string {
+	seen := make(map[string]bool)
+	for e := range t.Before.Members {
+		seen[e] = true
+	}
+	for e := range t.After.Members {
+		seen[e] = true
+	}
+	emails := make([]string, 0, len(seen))
+	for e := range seen {
+		emails = append(emails, e)
+	}
+	sort.Strings(emails)
+	return emails
+}
+
 type TeamStats struct {
 	Since        time.Time
 	Until        time.Time
@@ -50,6 +88,7 @@ type TeamStats struct {
 	TotalNet     int
 	TotalCommits int
 	Monthly      map[string]MonthStats
+	Daily        map[string]DayStats
 }
 
 func Analyze(repoPath, author string, since, until time.Time, excludePatterns []string) (RepoStats, error) {
@@ -59,19 +98,16 @@ func Analyze(repoPath, author string, since, until time.Time, excludePatterns []
 		Since:   since,
 		Until:   until,
 		Monthly: make(map[string]MonthStats),
+		Daily:   make(map[string]DayStats),
 	}
-
-	// Build git log command
-	sinceStr := since.Format("2006-01-02")
-	untilStr := until.Format("2006-01-02")
 
 	// Get commit stats with numstat
 	args := []string{
 		"-C", repoPath,
 		"log",
 		"--author=" + author,
-		"--since=" + sinceStr,
-		"--until=" + untilStr,
+		"--since=" + TimeArg(since),
+		"--until=" + TimeArg(until),
 		"--pretty=format:%H|%ad",
 		"--date=short",
 		"--numstat",
@@ -93,27 +129,42 @@ func Analyze(repoPath, author string, since, until time.Time, excludePatterns []
 			continue
 		}
 
-		// Check if it's a commit header line
-		if strings.Contains(line, "|") {
-			parts := strings.Split(line, "|")
-			if len(parts) >= 2 {
-				currentDate = parts[1]
-				stats.Commits++
+		// Commit header lines are "<40-hex sha>|<date>". Matching on the sha
+		// shape rather than a bare "|" keeps filenames containing a pipe from
+		// being mistaken for a new commit.
+		if date, ok := parseCommitHeader(line); ok {
+			currentDate = date
+			currentMonth = ""
+			if len(currentDate) >= 7 {
+				currentMonth = currentDate[:7]
+			}
+			stats.Commits++
 
-				// Track first and last commit dates
-				if commitDate, err := time.Parse("2006-01-02", currentDate); err == nil {
-					if stats.FirstCommit.IsZero() || commitDate.Before(stats.FirstCommit) {
-						stats.FirstCommit = commitDate
-					}
-					if stats.LastCommit.IsZero() || commitDate.After(stats.LastCommit) {
-						stats.LastCommit = commitDate
-					}
+			// Track first and last commit dates
+			if commitDate, err := time.Parse("2006-01-02", currentDate); err == nil {
+				if stats.FirstCommit.IsZero() || commitDate.Before(stats.FirstCommit) {
+					stats.FirstCommit = commitDate
 				}
+				if stats.LastCommit.IsZero() || commitDate.After(stats.LastCommit) {
+					stats.LastCommit = commitDate
+				}
+			}
 
-				// Parse month
-				if len(currentDate) >= 7 {
-					currentMonth = currentDate[:7]
-				}
+			// Count the commit once, here, rather than once per changed file.
+			if currentMonth != "" {
+				m := stats.Monthly[currentMonth]
+				m.Commits++
+				y, _ := strconv.Atoi(currentMonth[:4])
+				mo, _ := strconv.Atoi(currentMonth[5:7])
+				m.Year = y
+				m.Month = mo
+				stats.Monthly[currentMonth] = m
+			}
+			if currentDate != "" {
+				d := stats.Daily[currentDate]
+				d.Date = currentDate
+				d.Commits++
+				stats.Daily[currentDate] = d
 			}
 			continue
 		}
@@ -140,22 +191,19 @@ func Analyze(repoPath, author string, since, until time.Time, excludePatterns []
 				stats.Deleted += deleted
 				stats.FilesChanged++
 
-				// Update monthly stats
 				if currentMonth != "" {
 					m := stats.Monthly[currentMonth]
 					m.Added += added
 					m.Deleted += deleted
 					m.Net = m.Added - m.Deleted
-					m.Commits++
-
-					// Parse year and month
-					if len(currentMonth) >= 7 {
-						y, _ := strconv.Atoi(currentMonth[:4])
-						mo, _ := strconv.Atoi(currentMonth[5:7])
-						m.Year = y
-						m.Month = mo
-					}
 					stats.Monthly[currentMonth] = m
+				}
+				if currentDate != "" {
+					d := stats.Daily[currentDate]
+					d.Added += added
+					d.Deleted += deleted
+					d.Net = d.Added - d.Deleted
+					stats.Daily[currentDate] = d
 				}
 			}
 		}
@@ -164,6 +212,97 @@ func Analyze(repoPath, author string, since, until time.Time, excludePatterns []
 	stats.Net = stats.Added - stats.Deleted
 
 	return stats, nil
+}
+
+// PeriodRow is one row of a monthly, weekly or daily breakdown.
+type PeriodRow struct {
+	Key     string // sortable key
+	Label   string // display label
+	Added   int
+	Deleted int
+	Net     int
+	Commits int
+}
+
+// Granularities lists the values accepted by --breakdown.
+var Granularities = []string{"monthly", "weekly", "daily"}
+
+// ValidGranularity reports whether g is a supported --breakdown value.
+func ValidGranularity(g string) bool {
+	for _, v := range Granularities {
+		if v == g {
+			return true
+		}
+	}
+	return false
+}
+
+// Breakdown groups the per-day buckets into the requested granularity and
+// returns rows sorted oldest first. An unsupported granularity returns nil.
+func Breakdown(stats RepoStats, granularity string) []PeriodRow {
+	if !ValidGranularity(granularity) {
+		return nil
+	}
+
+	grouped := make(map[string]*PeriodRow)
+	for date, d := range stats.Daily {
+		t, err := time.Parse("2006-01-02", date)
+		if err != nil {
+			continue
+		}
+
+		var key, label string
+		switch granularity {
+		case "monthly":
+			key = t.Format("2006-01")
+			label = t.Format("Jan 2006")
+		case "weekly":
+			// Anchor each week on its Monday so the label names a real date.
+			monday := t.AddDate(0, 0, -weekdayOffset(t))
+			key = monday.Format("2006-01-02")
+			label = "Week of " + monday.Format("Jan 2 2006")
+		case "daily":
+			key = t.Format("2006-01-02")
+			label = t.Format("Jan 2 2006")
+		}
+
+		row, ok := grouped[key]
+		if !ok {
+			row = &PeriodRow{Key: key, Label: label}
+			grouped[key] = row
+		}
+		row.Added += d.Added
+		row.Deleted += d.Deleted
+		row.Commits += d.Commits
+	}
+
+	rows := make([]PeriodRow, 0, len(grouped))
+	for _, r := range grouped {
+		r.Net = r.Added - r.Deleted
+		rows = append(rows, *r)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Key < rows[j].Key })
+	return rows
+}
+
+// weekdayOffset returns days elapsed since Monday for t.
+func weekdayOffset(t time.Time) int {
+	return (int(t.Weekday()) + 6) % 7
+}
+
+// parseCommitHeader recognises a "<sha>|<date>" header emitted by our
+// --pretty format and returns the date field.
+func parseCommitHeader(line string) (string, bool) {
+	sha, date, ok := strings.Cut(line, "|")
+	if !ok || len(sha) != 40 {
+		return "", false
+	}
+	for _, r := range sha {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return "", false
+		}
+	}
+	return date, true
 }
 
 func GetDefaultAuthor(repoPath string) (string, error) {
@@ -175,20 +314,82 @@ func GetDefaultAuthor(repoPath string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-func ParseDate(dateStr string) (time.Time, error) {
-	// Try parsing as absolute date
-	formats := []string{
-		"2006-01-02",
-		"2006-01",
-		"2006",
-	}
+// TimeArg formats t for git's --since/--until flags.
+//
+// git parses a bare "2006-01-02" with its approxidate parser, which resolves
+// the date in the local timezone and does not reliably include commits made
+// during that day. An explicit RFC3339 timestamp carries the offset, so git
+// compares the exact instant we mean.
+func TimeArg(t time.Time) string {
+	return t.Format(time.RFC3339)
+}
 
-	for _, format := range formats {
-		if t, err := time.Parse(format, dateStr); err == nil {
-			return t, nil
+// dateGranularity records how precise an absolute date string was, so an end
+// bound can be widened to cover the whole day, month or year the user named.
+type dateGranularity int
+
+const (
+	granularityInstant dateGranularity = iota
+	granularityDay
+	granularityMonth
+	granularityYear
+)
+
+// parseAbsolute resolves the absolute date forms in the local timezone.
+// Dates are what the user sees on their own calendar, so local is the
+// intuitive reading and matches how --year is resolved.
+func parseAbsolute(dateStr string) (time.Time, dateGranularity, bool) {
+	for _, f := range []struct {
+		layout      string
+		granularity dateGranularity
+	}{
+		{"2006-01-02", granularityDay},
+		{"2006-01", granularityMonth},
+		{"2006", granularityYear},
+	} {
+		if t, err := time.ParseInLocation(f.layout, dateStr, time.Local); err == nil {
+			return t, f.granularity, true
 		}
 	}
+	return time.Time{}, granularityInstant, false
+}
 
+// endOfRange widens t to the last instant of the unit the user named, so
+// "--until 2025-03-05" includes commits made during 5 March.
+func endOfRange(t time.Time, g dateGranularity) time.Time {
+	switch g {
+	case granularityDay:
+		return t.AddDate(0, 0, 1).Add(-time.Nanosecond)
+	case granularityMonth:
+		return t.AddDate(0, 1, 0).Add(-time.Nanosecond)
+	case granularityYear:
+		return t.AddDate(1, 0, 0).Add(-time.Nanosecond)
+	default:
+		return t
+	}
+}
+
+// ParseDate resolves a start-of-range date. Absolute forms (2006-01-02,
+// 2006-01, 2006) return the first instant of that day, month or year.
+// Relative forms ("30 days ago") return that instant.
+func ParseDate(dateStr string) (time.Time, error) {
+	if t, _, ok := parseAbsolute(dateStr); ok {
+		return t, nil
+	}
+	return parseRelative(dateStr)
+}
+
+// ParseDateEnd resolves an end-of-range date. Absolute forms return the LAST
+// instant of the named day, month or year so the bound is inclusive; relative
+// forms behave like ParseDate.
+func ParseDateEnd(dateStr string) (time.Time, error) {
+	if t, g, ok := parseAbsolute(dateStr); ok {
+		return endOfRange(t, g), nil
+	}
+	return parseRelative(dateStr)
+}
+
+func parseRelative(dateStr string) (time.Time, error) {
 	// Parse relative dates
 	dateStr = strings.ToLower(dateStr)
 
@@ -237,7 +438,10 @@ func ParseDate(dateStr string) (time.Time, error) {
 
 func CombineStats(stats []RepoStats) RepoStats {
 	if len(stats) == 0 {
-		return RepoStats{Monthly: make(map[string]MonthStats)}
+		return RepoStats{
+			Monthly: make(map[string]MonthStats),
+			Daily:   make(map[string]DayStats),
+		}
 	}
 
 	combined := RepoStats{
@@ -245,6 +449,7 @@ func CombineStats(stats []RepoStats) RepoStats {
 		Since:   stats[0].Since,
 		Until:   stats[0].Until,
 		Monthly: make(map[string]MonthStats),
+		Daily:   make(map[string]DayStats),
 	}
 
 	for _, s := range stats {
@@ -275,6 +480,17 @@ func CombineStats(stats []RepoStats) RepoStats {
 			existing.Year = m.Year
 			existing.Month = m.Month
 			combined.Monthly[month] = existing
+		}
+
+		// Merge daily stats
+		for day, d := range s.Daily {
+			existing := combined.Daily[day]
+			existing.Date = day
+			existing.Added += d.Added
+			existing.Deleted += d.Deleted
+			existing.Net = existing.Added - existing.Deleted
+			existing.Commits += d.Commits
+			combined.Daily[day] = existing
 		}
 	}
 

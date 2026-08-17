@@ -19,6 +19,42 @@ type JSONReport struct {
 	Benchmarks []BenchmarkResult  `json:"benchmarks,omitempty"`
 	Metrics    *MetricsPayload    `json:"metrics,omitempty"`
 	Monthly    []MonthlyJSONStats `json:"monthly,omitempty"`
+	Breakdown  *BreakdownJSON     `json:"breakdown,omitempty"`
+}
+
+// BreakdownJSON carries whichever --breakdown granularity was requested.
+// The legacy "monthly" field is still emitted for monthly so existing
+// consumers keep working.
+type BreakdownJSON struct {
+	Granularity string          `json:"granularity"`
+	Periods     []PeriodRowJSON `json:"periods"`
+}
+
+type PeriodRowJSON struct {
+	Label   string `json:"label"`
+	Added   int    `json:"added"`
+	Deleted int    `json:"deleted"`
+	Net     int    `json:"net"`
+	Commits int    `json:"commits"`
+}
+
+// buildBreakdown converts stats into the generic breakdown payload.
+func buildBreakdown(stats git.RepoStats, granularity string) *BreakdownJSON {
+	rows := git.Breakdown(stats, granularity)
+	if len(rows) == 0 {
+		return nil
+	}
+	out := &BreakdownJSON{Granularity: granularity, Periods: make([]PeriodRowJSON, 0, len(rows))}
+	for _, r := range rows {
+		out.Periods = append(out.Periods, PeriodRowJSON{
+			Label:   r.Label,
+			Added:   r.Added,
+			Deleted: r.Deleted,
+			Net:     r.Net,
+			Commits: r.Commits,
+		})
+	}
+	return out
 }
 
 type MetricsPayload struct {
@@ -76,6 +112,23 @@ type PeriodStats struct {
 	Net         int     `json:"net"`
 	WorkingDays int     `json:"working_days"`
 	PerDay      float64 `json:"per_day"`
+}
+
+type TeamCompareJSONReport struct {
+	Before     PeriodStats               `json:"before"`
+	After      PeriodStats               `json:"after"`
+	Multiplier float64                   `json:"productivity_multiplier"`
+	Change     string                    `json:"change_description"`
+	Members    []MemberCompareJSONReport `json:"members"`
+}
+
+type MemberCompareJSONReport struct {
+	Email  string      `json:"email"`
+	Before PeriodStats `json:"before"`
+	After  PeriodStats `json:"after"`
+	// Multiplier is null when the member has no positive "before" output to
+	// compare against, rather than reporting a meaningless ratio.
+	Multiplier *float64 `json:"productivity_multiplier"`
 }
 
 func JSON(stats git.RepoStats, filename string, breakdown string, bundle metrics.Bundle) error {
@@ -147,22 +200,11 @@ func JSON(stats git.RepoStats, filename string, breakdown string, bundle metrics
 		}
 	}
 
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %w", err)
+	if breakdown != "" {
+		report.Breakdown = buildBreakdown(stats, breakdown)
 	}
 
-	if filename != "" {
-		err = os.WriteFile(filename, data, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to write file: %w", err)
-		}
-		fmt.Printf("✓ Report saved to %s\n", filename)
-	} else {
-		fmt.Println(string(data))
-	}
-
-	return nil
+	return writeJSON(report, filename)
 }
 
 type TeamJSONReport struct {
@@ -278,6 +320,71 @@ func TeamJSON(stats git.TeamStats, filename string, breakdown string, bundles ma
 		fmt.Println(string(data))
 	}
 
+	return nil
+}
+
+// TeamCompareJSON writes a before/after comparison for a whole team.
+func TeamCompareJSON(c git.TeamCompareStats, filename string) error {
+	beforeDays := git.WorkingDays(c.Before.Since, c.Before.Until)
+	afterDays := git.WorkingDays(c.After.Since, c.After.Until)
+
+	beforePerDay := float64(c.Before.TotalNet) / float64(beforeDays)
+	afterPerDay := float64(c.After.TotalNet) / float64(afterDays)
+	multiplier := benchmark.CalculateMultiplier(beforePerDay, afterPerDay)
+
+	report := TeamCompareJSONReport{
+		Before: PeriodStats{
+			Label:       c.BeforeLabel,
+			Net:         c.Before.TotalNet,
+			WorkingDays: beforeDays,
+			PerDay:      beforePerDay,
+		},
+		After: PeriodStats{
+			Label:       c.AfterLabel,
+			Net:         c.After.TotalNet,
+			WorkingDays: afterDays,
+			PerDay:      afterPerDay,
+		},
+		Multiplier: multiplier,
+		Change:     fmt.Sprintf("%.1fx productivity change", multiplier),
+		Members:    []MemberCompareJSONReport{},
+	}
+
+	for _, email := range c.MemberEmails() {
+		before := c.Before.Members[email]
+		after := c.After.Members[email]
+		bPerDay := float64(before.Net) / float64(beforeDays)
+		aPerDay := float64(after.Net) / float64(afterDays)
+
+		row := MemberCompareJSONReport{
+			Email:  email,
+			Before: PeriodStats{Label: c.BeforeLabel, Net: before.Net, WorkingDays: beforeDays, PerDay: bPerDay},
+			After:  PeriodStats{Label: c.AfterLabel, Net: after.Net, WorkingDays: afterDays, PerDay: aPerDay},
+		}
+		if before.Net > 0 {
+			m := benchmark.CalculateMultiplier(bPerDay, aPerDay)
+			row.Multiplier = &m
+		}
+		report.Members = append(report.Members, row)
+	}
+
+	return writeJSON(report, filename)
+}
+
+// writeJSON marshals v and either writes it to filename or prints it.
+func writeJSON(v any, filename string) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	if filename != "" {
+		if err := os.WriteFile(filename, data, 0644); err != nil {
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+		fmt.Printf("✓ Report saved to %s\n", filename)
+		return nil
+	}
+	fmt.Println(string(data))
 	return nil
 }
 

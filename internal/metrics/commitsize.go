@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/juangracia/gitrespect/internal/git"
 )
 
 // SizeBucket categorizes a commit by total lines changed.
@@ -39,8 +41,8 @@ func ComputeCommitSize(repoPath, author string, since, until time.Time, exclude 
 	args := []string{
 		"-C", repoPath, "log",
 		"--author=" + author,
-		"--since=" + since.Format("2006-01-02"),
-		"--until=" + until.Format("2006-01-02"),
+		"--since=" + git.TimeArg(since),
+		"--until=" + git.TimeArg(until),
 		"--pretty=format:COMMIT %H",
 		"--numstat",
 	}

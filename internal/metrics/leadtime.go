@@ -6,13 +6,30 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/juangracia/gitrespect/internal/git"
 )
 
-// LeadTime holds the result of a lead time analysis across merge commits.
+// Lead time measurement methods.
+const (
+	// LeadTimeMerge measures from the first commit on a feature branch to the
+	// merge commit that landed it. Requires real merge commits.
+	LeadTimeMerge = "merge-commits"
+	// LeadTimeAuthored measures committer date minus author date for commits
+	// on main. Rebase and patch workflows preserve the author date, so this
+	// recovers lead time where no merge commit exists. Squash merges rewrite
+	// both dates, so they yield no samples here.
+	LeadTimeAuthored = "authored-to-landed"
+)
+
+// LeadTime holds the result of a lead time analysis.
 type LeadTime struct {
 	MedianDays float64 `json:"median_days"`
 	Samples    int     `json:"samples"`
 	MainBranch string  `json:"main_branch"`
+	// Method records how lead time was derived, since the two approaches are
+	// not directly comparable.
+	Method string `json:"method,omitempty"`
 }
 
 // ComputeLeadTime calculates the median lead time (in days) for merge commits
@@ -29,8 +46,8 @@ func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime,
 		"--merges",
 		"--first-parent",
 		"--author=" + author,
-		"--since=" + since.Format("2006-01-02"),
-		"--until=" + until.Format("2006-01-02"),
+		"--since=" + git.TimeArg(since),
+		"--until=" + git.TimeArg(until),
 		"--format=%H %P %ct",
 	}
 	out, err := exec.Command("git", args...).Output()
@@ -85,9 +102,60 @@ func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime,
 		days = append(days, leadDays)
 	}
 
+	if len(days) > 0 {
+		return LeadTime{
+			MedianDays: median(days),
+			Samples:    len(days),
+			MainBranch: main,
+			Method:     LeadTimeMerge,
+		}, nil
+	}
+
+	// No merge commits in range. Fall back to author-to-landed, which still
+	// works for rebase and patch-based workflows.
+	return authoredLeadTime(repoPath, author, main, since, until)
+}
+
+// authoredLeadTime derives lead time from the gap between when a commit was
+// authored and when it landed on main. Only commits whose committer date is
+// later than their author date carry a signal; a commit made directly on main
+// has identical dates and is correctly excluded rather than counted as zero.
+func authoredLeadTime(repoPath, author, main string, since, until time.Time) (LeadTime, error) {
+	args := []string{
+		"-C", repoPath,
+		"log", main,
+		"--no-merges",
+		"--author=" + author,
+		"--since=" + git.TimeArg(since),
+		"--until=" + git.TimeArg(until),
+		"--format=%at %ct",
+	}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return LeadTime{MainBranch: main}, fmt.Errorf("git log: %w", err)
+	}
+
+	var days []float64
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		at, err1 := strconv.ParseInt(fields[0], 10, 64)
+		ct, err2 := strconv.ParseInt(fields[1], 10, 64)
+		if err1 != nil || err2 != nil || ct <= at {
+			continue
+		}
+		days = append(days, float64(ct-at)/86400.0)
+	}
+
+	if len(days) == 0 {
+		return LeadTime{MainBranch: main}, nil
+	}
 	return LeadTime{
 		MedianDays: median(days),
 		Samples:    len(days),
 		MainBranch: main,
+		Method:     LeadTimeAuthored,
 	}, nil
 }

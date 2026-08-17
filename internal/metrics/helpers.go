@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/juangracia/gitrespect/internal/git"
 )
 
 // detectMainBranch returns "main", "master", or the resolved origin HEAD name.
@@ -78,8 +80,8 @@ func sumNumstat(repoPath, author string, since, until time.Time, exclude []strin
 	args := []string{
 		"-C", repoPath, "log",
 		"--author=" + author,
-		"--since=" + since.Format("2006-01-02"),
-		"--until=" + until.Format("2006-01-02"),
+		"--since=" + git.TimeArg(since),
+		"--until=" + git.TimeArg(until),
 		"--pretty=format:",
 		"--numstat",
 	}

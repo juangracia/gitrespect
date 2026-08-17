@@ -34,6 +34,7 @@ func init() {
 	compareCmd.Flags().StringVar(&beforePeriod, "before", "", "Before period (YYYY-MM:YYYY-MM)")
 	compareCmd.Flags().StringVar(&afterPeriod, "after", "", "After period (YYYY-MM:YYYY-MM)")
 	compareCmd.Flags().StringVarP(&author, "author", "a", "", "Filter by author email")
+	compareCmd.Flags().StringSliceVarP(&team, "team", "t", nil, "Team mode: compare multiple authors (comma-separated emails)")
 	compareCmd.Flags().StringVarP(&output, "output", "o", "terminal", "Output format: terminal, json, or html")
 	compareCmd.Flags().StringVarP(&file, "file", "f", "", "Output file path")
 	compareCmd.Flags().StringVar(&theme, "theme", "dark", "HTML theme: dark or light")
@@ -48,21 +49,24 @@ func init() {
 func parsePeriod(period string) (time.Time, time.Time, error) {
 	parts := strings.Split(period, ":")
 	if len(parts) != 2 {
-		return time.Time{}, time.Time{}, fmt.Errorf("invalid period format, expected YYYY-MM:YYYY-MM")
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid period format %q, expected YYYY-MM:YYYY-MM", period)
 	}
 
-	start, err := time.Parse("2006-01", parts[0])
+	// Reuse the shared parsers so periods resolve in local time and the end
+	// bound covers the whole final month or day.
+	start, err := git.ParseDate(parts[0])
 	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("invalid start date: %w", err)
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid start date %q: %w", parts[0], err)
 	}
 
-	end, err := time.Parse("2006-01", parts[1])
+	end, err := git.ParseDateEnd(parts[1])
 	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("invalid end date: %w", err)
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid end date %q: %w", parts[1], err)
 	}
 
-	// End should be last day of the month
-	end = end.AddDate(0, 1, 0).Add(-time.Second)
+	if !end.After(start) {
+		return time.Time{}, time.Time{}, fmt.Errorf("period %q ends before it starts", period)
+	}
 
 	return start, end, nil
 }
@@ -85,6 +89,10 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		paths[i] = abs
 	}
 
+	if err := validateOutputFlags("", output, theme); err != nil {
+		return err
+	}
+
 	beforeStart, beforeEnd, err := parsePeriod(beforePeriod)
 	if err != nil {
 		return fmt.Errorf("invalid --before: %w", err)
@@ -93,6 +101,28 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	afterStart, afterEnd, err := parsePeriod(afterPeriod)
 	if err != nil {
 		return fmt.Errorf("invalid --after: %w", err)
+	}
+
+	if len(team) > 0 {
+		beforeTeam, _ := buildTeamStats(paths, team, beforeStart, beforeEnd)
+		afterTeam, _ := buildTeamStats(paths, team, afterStart, afterEnd)
+		if len(beforeTeam.Members) == 0 && len(afterTeam.Members) == 0 {
+			return fmt.Errorf("no team members could be analyzed")
+		}
+		comparison := git.TeamCompareStats{
+			Before:      beforeTeam,
+			After:       afterTeam,
+			BeforeLabel: beforePeriod,
+			AfterLabel:  afterPeriod,
+		}
+		switch output {
+		case "json":
+			return report.TeamCompareJSON(comparison, file)
+		case "html":
+			return report.TeamCompareHTML(comparison, file, theme)
+		default:
+			return report.TeamCompareTerminal(comparison)
+		}
 	}
 
 	authorEmail := author
