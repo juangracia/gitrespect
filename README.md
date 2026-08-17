@@ -2,7 +2,14 @@
 
 > Respect your git work with real metrics
 
+[![CI](https://github.com/juangracia/gitrespect/actions/workflows/ci.yml/badge.svg)](https://github.com/juangracia/gitrespect/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/juangracia/gitrespect)](https://goreportcard.com/report/github.com/juangracia/gitrespect)
+[![Latest release](https://img.shields.io/github/v/release/juangracia/gitrespect)](https://github.com/juangracia/gitrespect/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A fast CLI tool that analyzes git repositories and provides comprehensive developer productivity metrics. **Measure the real impact of AI tools on your productivity**, track team contributions, and benchmark against your own personal baseline.
+
+No agent, no sign-up, no instrumentation: gitrespect reads plain git history, so it works **retroactively** on any repository you already have.
 
 ![gitrespect report](screenshots/report-full.png)
 
@@ -39,7 +46,7 @@ brew install juangracia/gitrespect/gitrespect
 ### Using Go
 
 ```bash
-go install github.com/juangracia/gitrespect@latest
+go install github.com/juangracia/gitrespect/cmd/gitrespect@latest
 ```
 
 ### Download Binary
@@ -145,6 +152,39 @@ Output:
 - Comparing productivity across different project phases
 - Quantifying the ROI of AI tools for your team
 
+#### Team AI Adoption Audit
+
+Add `--team` to compare a whole group across the same two periods. You get
+the team total plus each member's individual change, which is what an
+adoption audit actually needs:
+
+```bash
+gitrespect compare --team=dev1@company.com,dev2@company.com,dev3@company.com \
+  --before=2025-01:2025-06 --after=2025-07:2025-12
+```
+
+```
+ gitrespect - Team Period Comparison
+──────────────────────────────────────────────────────────────────
+
+  Period          Net Lines   Days    Per Day
+  ────────────────────────────────────────────
+  2025-01:2025-06 18,204      129     141
+  2025-07:2025-12 41,880      131     320
+
+  Team change: +2.3x productivity 📈
+
+  Per Member
+  Contributor          Before     After      Change
+  ──────────────────────────────────────────────────
+  dev1@company.com     9,120      21,400     +2.3x
+  dev2@company.com     6,984      15,300     +2.2x
+  dev3@company.com     2,100      5,180      +2.5x
+```
+
+Members with no output in the "before" period report `n/a` rather than a
+meaningless ratio.
+
 ### Team Analysis
 
 Analyze contributions across your entire team:
@@ -210,11 +250,17 @@ gitrespect -r ~/projects
 gitrespect --year=2025
 ```
 
-### Monthly Breakdown
+### Breakdowns
+
+Group output by month, week or day. Weeks are anchored on Monday.
 
 ```bash
 gitrespect --year=2025 --breakdown=monthly
+gitrespect --year=2025 --breakdown=weekly
+gitrespect --since=2025-06-01 --breakdown=daily
 ```
+
+Works with `--team` and with every output format.
 
 ### Custom Date Range
 
@@ -273,12 +319,23 @@ gitrespect --year=2025 --breakdown=monthly --metrics=all --output=html --file=re
 |--------|-----------|---------------|
 | Commit size distribution | `commit-size` | % of commits that are micro (<10), small (10-99), medium (100-499), large (500+) |
 | Integration cadence | `cadence` | Median days between commits on the main branch |
-| Lead time | `lead-time` | Median days from a feature branch's first commit to its merge into main |
+| Lead time | `lead-time` | Median days from a feature branch's first commit to it landing on main |
 | Churn | `churn` | % of recently added lines rewritten within the churn window (`--churn-window`, default 30d) |
 
 The personal baseline window is controlled with `--baseline-window` (e.g. `30d`,
 `90d`, `6m`, `1y`). To bring back the deprecated Senior/Avg/Junior comparison,
 pass `--legacy-benchmark`.
+
+#### A note on lead time and squash merges
+
+Lead time is measured from merge commits where they exist. Where they don't,
+gitrespect falls back to the gap between when a commit was authored and when
+it landed on main, which rebase and patch-based workflows preserve.
+
+**Squash merges rewrite both timestamps**, so a squash-merging repository
+leaves nothing in git history to measure and gitrespect will say so rather
+than report a misleading zero. This is a limitation of git history, not a bug.
+The other metrics are unaffected.
 
 ### Export to JSON
 
@@ -317,9 +374,16 @@ Flags:
   -h, --help                 Show help
 
 Commands:
-  gitrespect compare       Compare two time periods
+  gitrespect compare       Compare two time periods (add --team for a group)
   gitrespect version       Show version info
 ```
+
+Dates accept `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, or relative forms like
+`"30 days ago"`. `--until` is inclusive: `--until=2025-03-05` covers all of
+5 March, and `--until=2025-03` covers all of March.
+
+Colour is disabled automatically when output is piped or redirected, and when
+[`NO_COLOR`](https://no-color.org) is set.
 
 ## Personal Baseline
 

@@ -39,7 +39,9 @@ var rootCmd = &cobra.Command{
 	Long: `gitrespect analyzes git repositories and provides developer productivity metrics.
 
 Run in any git repository to see your contribution statistics including
-lines added, deleted, net changes, and comparisons to industry benchmarks.`,
+lines added, deleted, net changes, and a comparison against your own prior
+output (personal baseline). Add --metrics for commit size, integration
+cadence, lead time, and churn.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runAnalyze,
 }
@@ -88,7 +90,53 @@ func parseWindow(raw string) (time.Duration, error) {
 }
 
 func Execute() error {
+	// Runtime failures (bad repo, bad dates) are not usage errors, so don't
+	// reprint the whole help screen after the message.
+	rootCmd.SilenceUsage = true
 	return rootCmd.Execute()
+}
+
+// validateOutputFlags rejects unsupported enum values up front, so a typo
+// fails loudly instead of being silently ignored.
+func validateOutputFlags(breakdown, output, theme string) error {
+	if breakdown != "" && !git.ValidGranularity(breakdown) {
+		return fmt.Errorf("invalid --breakdown %q: expected one of %s",
+			breakdown, strings.Join(git.Granularities, ", "))
+	}
+	switch output {
+	case "", "terminal", "json", "html":
+	default:
+		return fmt.Errorf("invalid --output %q: expected one of terminal, json, html", output)
+	}
+	switch theme {
+	case "", "dark", "light":
+	default:
+		return fmt.Errorf("invalid --theme %q: expected one of dark, light", theme)
+	}
+	return nil
+}
+
+// resolveAuthor returns the explicit --author, or falls back to the repo's
+// configured user.email. An empty author would match every commit in the
+// repository, so report the whole repo as one person's work is refused.
+func resolveAuthor(explicit, repoPath string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	email, err := git.GetDefaultAuthor(repoPath)
+	if err != nil || strings.TrimSpace(email) == "" {
+		return "", fmt.Errorf("could not determine author: git config user.email is unset; pass --author")
+	}
+	return email, nil
+}
+
+// warnUnusedFile tells the user when --file cannot take effect, rather than
+// silently writing nothing.
+func warnUnusedFile(output, file string) {
+	if file != "" && output != "json" && output != "html" {
+		fmt.Fprintf(os.Stderr,
+			"note: --file is only used with --output json or html; ignoring %q\n", file)
+	}
 }
 
 func runAnalyze(cmd *cobra.Command, args []string) error {
@@ -131,9 +179,21 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	var sinceTime, untilTime time.Time
 	var err error
 
+	if err := validateOutputFlags(breakdown, output, theme); err != nil {
+		return err
+	}
+	warnUnusedFile(output, file)
+
+	if cmd.Flags().Changed("year") && year <= 0 {
+		return fmt.Errorf("invalid --year %d: expected a four-digit year like 2025", year)
+	}
+
 	if year > 0 {
 		sinceTime = time.Date(year, 1, 1, 0, 0, 0, 0, time.Local)
 		untilTime = time.Date(year, 12, 31, 23, 59, 59, 0, time.Local)
+		if sinceTime.After(time.Now()) {
+			return fmt.Errorf("--year %d is in the future", year)
+		}
 		if untilTime.After(time.Now()) {
 			untilTime = time.Now()
 		}
@@ -146,11 +206,18 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		if until == "" {
 			untilTime = time.Now()
 		} else {
-			untilTime, err = git.ParseDate(until)
+			// ParseDateEnd so that --until 2025-03-05 covers all of 5 March
+			// rather than stopping at midnight and dropping that day.
+			untilTime, err = git.ParseDateEnd(until)
 			if err != nil {
 				return fmt.Errorf("invalid --until date: %w", err)
 			}
 		}
+	}
+
+	if !untilTime.After(sinceTime) {
+		return fmt.Errorf("--since (%s) must be before --until (%s)",
+			sinceTime.Format("2006-01-02"), untilTime.Format("2006-01-02"))
 	}
 
 	// Check if team mode is enabled
@@ -158,10 +225,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return runTeamAnalysis(paths, team, sinceTime, untilTime)
 	}
 
-	// Get author if not specified
-	authorEmail := author
-	if authorEmail == "" {
-		authorEmail, _ = git.GetDefaultAuthor(paths[0])
+	authorEmail, err := resolveAuthor(author, paths[0])
+	if err != nil {
+		return err
 	}
 
 	// Analyze repositories
@@ -228,29 +294,22 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time.Time) error {
-	selection, err := metrics.ParseSelection(metricsFlag)
-	if err != nil {
-		return err
-	}
-	cWindow, err := parseWindow(churnWindow)
-	if err != nil {
-		return fmt.Errorf("invalid --churn-window: %w", err)
-	}
-
+// buildTeamStats aggregates each member's stats across the given paths for a
+// single period. It also returns the per-member, per-repo stats so callers can
+// pick a primary repo for opt-in metrics.
+func buildTeamStats(paths, members []string, since, until time.Time) (git.TeamStats, map[string][]git.RepoStats) {
 	teamStats := git.TeamStats{
-		Since:   sinceTime,
-		Until:   untilTime,
+		Since:   since,
+		Until:   until,
 		Members: make(map[string]git.RepoStats),
 	}
-	bundles := make(map[string]metrics.Bundle)
+	perMember := make(map[string][]git.RepoStats)
 	var memberCombined []git.RepoStats
 
-	// Analyze each team member
 	for _, member := range members {
 		var memberStats []git.RepoStats
 		for _, path := range paths {
-			stats, err := git.Analyze(path, member, sinceTime, untilTime, exclude)
+			stats, err := git.Analyze(path, member, since, until, exclude)
 			if err != nil {
 				continue
 			}
@@ -268,20 +327,39 @@ func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time
 		teamStats.TotalNet += combined.Net
 		teamStats.TotalCommits += combined.Commits
 		memberCombined = append(memberCombined, combined)
-
-		// Per-member opt-in metrics, computed on the member's primary repo.
-		if selection.Any() {
-			primary := primaryRepo(memberStats, paths[0])
-			bundles[member] = computeOptInMetrics(primary, member, sinceTime, untilTime, selection, cWindow, exclude)
-		}
+		perMember[member] = memberStats
 	}
+
+	agg := git.CombineStats(memberCombined)
+	teamStats.Monthly = agg.Monthly
+	teamStats.Daily = agg.Daily
+	return teamStats, perMember
+}
+
+func runTeamAnalysis(paths []string, members []string, sinceTime, untilTime time.Time) error {
+	selection, err := metrics.ParseSelection(metricsFlag)
+	if err != nil {
+		return err
+	}
+	cWindow, err := parseWindow(churnWindow)
+	if err != nil {
+		return fmt.Errorf("invalid --churn-window: %w", err)
+	}
+
+	teamStats, perMember := buildTeamStats(paths, members, sinceTime, untilTime)
 
 	if len(teamStats.Members) == 0 {
 		return fmt.Errorf("no team members could be analyzed")
 	}
 
-	// Team-wide monthly breakdown aggregated across all members.
-	teamStats.Monthly = git.CombineStats(memberCombined).Monthly
+	// Per-member opt-in metrics, computed on each member's primary repo.
+	bundles := make(map[string]metrics.Bundle)
+	if selection.Any() {
+		for member, memberStats := range perMember {
+			primary := primaryRepo(memberStats, paths[0])
+			bundles[member] = computeOptInMetrics(primary, member, sinceTime, untilTime, selection, cWindow, exclude)
+		}
+	}
 
 	// Generate output
 	switch output {

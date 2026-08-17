@@ -41,6 +41,8 @@ Map what the user wants to the right flags. Common intents:
 | A monthly trend | `gitrespect --year=2025 -b monthly` |
 | A team total | `gitrespect -t a@x.com,b@x.com,c@x.com --year=2025` |
 | A team with per-member metrics | `gitrespect -t a@x.com,b@x.com --year=2025 --metrics=all -b monthly` |
+| A team before/after audit | `gitrespect compare -t a@x.com,b@x.com --before=2025-01:2025-06 --after=2025-07:2025-12` |
+| A weekly or daily trend | `gitrespect --year=2025 -b weekly` |
 | Several repos at once | `gitrespect ./api ./web ./gateway` |
 | Every repo under a folder | `gitrespect -r ~/projects` |
 | Per-repo breakdown | `gitrespect -r ~/projects --per-repo` |
@@ -94,11 +96,19 @@ the canonical use is "before vs after I adopted Copilot/Claude/Cursor":
 gitrespect compare --before=2025-01:2025-06 --after=2025-07:2025-12
 ```
 
-Periods are `YYYY-MM:YYYY-MM`. Output reports net lines/day for each period and
-the multiplier between them. `compare` takes `[paths...]`, `-a/--author`,
-`-e/--exclude`, `-o/--output`, `-f/--file`, and `--theme` — note it does **not**
-take `-t/--team`; omit `-a` to include all authors, or run it per author for
-per-person deltas.
+Periods are `YYYY-MM:YYYY-MM` (a full `YYYY-MM-DD` also works). Output reports
+net lines/day for each period and the multiplier between them. `compare` takes
+`[paths...]`, `-a/--author`, `-t/--team`, `-e/--exclude`, `-o/--output`,
+`-f/--file`, and `--theme`.
+
+For a whole team, pass `-t` and get the team total plus a per-member table:
+
+```bash
+gitrespect compare -t a@x.com,b@x.com,c@x.com --before=2025-01:2025-06 --after=2025-07:2025-12
+```
+
+Members with no output in the before period show `n/a` instead of a ratio.
+Without `-a` or `-t`, compare uses the repo's configured `user.email`.
 
 ## Output formats
 
@@ -133,8 +143,10 @@ gitrespect -s 2025-04-01 -u 2025-06-30 --metrics=all
 ```bash
 gitrespect compare --before=2024-07:2024-12 --after=2025-01:2025-06 -a me@x.com
 ```
-(For a whole team, run `compare` once per author and report each delta; `compare`
-analyzes one author or all authors, not a custom team list.)
+**"Did Copilot make the team faster?"**
+```bash
+gitrespect compare -t a@x.com,b@x.com,c@x.com --before=2024-07:2024-12 --after=2025-01:2025-06
+```
 
 **"Give me a shareable report for my manager."**
 ```bash
@@ -152,5 +164,8 @@ gitrespect -r ~/projects --per-repo --year=2025
 - **Baseline + `--year` (or any window covering all of a repo's history):** the baseline looks at history *before* the window start, so if the repo's first commit falls inside the analyzed window, the baseline is always "insufficient prior history." Widen the window backward, use a shorter analysis period with `-s/-u`, or fall back to `-b monthly` to show the within-period trend.
 - Shallow clones undercount history; fetch full history for accurate baselines/lead time.
 - `--metrics` and the personal baseline currently compute from the repo with the most of the author's commits when multiple repos are given.
-- Team mode (`-t`) honors `--metrics` (computed per member) and `--breakdown=monthly` (team-wide). The personal baseline is single-author only and is not shown in team reports.
+- Team mode (`-t`) honors `--metrics` (computed per member) and `--breakdown` at any granularity (team-wide). The personal baseline is single-author only and is not shown in team reports.
+- `--breakdown` accepts `monthly`, `weekly` and `daily`; weeks are anchored on Monday.
+- `--until` is inclusive of the unit named: `--until=2025-03-05` covers all of 5 March.
+- Lead time needs merge commits, or a rebase/patch workflow that preserves author dates. Squash-merge repos rewrite both timestamps and report no signal; that is a git-history limitation, not a failure. Don't present it as zero.
 - Quote relative dates: `-s "30 days ago"`.

@@ -2,17 +2,19 @@ package report
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/juangracia/gitrespect/internal/benchmark"
 	"github.com/juangracia/gitrespect/internal/git"
 	"github.com/juangracia/gitrespect/internal/metrics"
 )
 
-const (
+// ANSI styles, blanked when the output is not an interactive terminal so
+// piping or redirecting produces clean text instead of escape codes.
+var (
 	colorReset  = "\033[0m"
 	colorBold   = "\033[1m"
 	colorDim    = "\033[2m"
@@ -20,6 +22,27 @@ const (
 	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
 )
+
+func init() {
+	if !colorEnabled() {
+		colorReset, colorBold, colorDim = "", "", ""
+		colorCyan, colorGreen, colorYellow = "", "", ""
+	}
+}
+
+// colorEnabled reports whether to emit ANSI styling. It honours the NO_COLOR
+// convention (https://no-color.org) and otherwise requires a character device
+// on stdout.
+func colorEnabled() bool {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
 
 func Terminal(stats git.RepoStats, breakdown string, bundle metrics.Bundle) error {
 	// Use full date range for daily average (not just active commit span)
@@ -106,15 +129,15 @@ func Terminal(stats git.RepoStats, breakdown string, bundle metrics.Bundle) erro
 	renderMetrics(bundle)
 
 	// Monthly breakdown if requested
-	if breakdown == "monthly" && len(stats.Monthly) > 0 {
-		printMonthlyBreakdown(stats)
+	if breakdown != "" {
+		printBreakdown(stats, breakdown)
 	}
 
 	return nil
 }
 
 func renderMetrics(b metrics.Bundle) {
-	if b.CommitSize != nil {
+	if b.CommitSize != nil && b.CommitSize.Total > 0 {
 		d := b.CommitSize
 		fmt.Printf("  %sCommit size distribution:%s\n", colorDim, colorReset)
 		rows := []struct {
@@ -145,8 +168,10 @@ func renderMetrics(b metrics.Bundle) {
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
 		case c.Samples < 1:
 			fmt.Printf("  └── %sinsufficient data (need 2+ commits on %s)%s\n", colorDim, c.MainBranch, colorReset)
+		case c.MedianDaysBetween < 0.1:
+			fmt.Printf("  └── Multiple commits most active days on %s (%d gaps)\n", c.MainBranch, c.Samples)
 		default:
-			fmt.Printf("  └── Median %.1f days between commits to %s\n", c.MedianDaysBetween, c.MainBranch)
+			fmt.Printf("  └── Median %.1f days between commits to %s (%d gaps)\n", c.MedianDaysBetween, c.MainBranch, c.Samples)
 		}
 		fmt.Println()
 	}
@@ -157,9 +182,13 @@ func renderMetrics(b metrics.Bundle) {
 		case lt.MainBranch == "":
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
 		case lt.Samples == 0:
-			fmt.Printf("  └── %sno merges in period%s\n", colorDim, colorReset)
+			fmt.Printf("  └── %sno signal: squash merges rewrite both dates, leaving nothing to measure%s\n", colorDim, colorReset)
+		case lt.Method == metrics.LeadTimeAuthored:
+			fmt.Printf("  └── Median %.1f days (%d %s, authored → landed)\n",
+				lt.MedianDays, lt.Samples, pluralize(lt.Samples, "commit"))
 		default:
-			fmt.Printf("  └── Median %.1f days (%d merges analyzed)\n", lt.MedianDays, lt.Samples)
+			fmt.Printf("  └── Median %.1f days (%d %s analyzed)\n",
+				lt.MedianDays, lt.Samples, pluralize(lt.Samples, "merge"))
 		}
 		fmt.Println()
 	}
@@ -167,7 +196,7 @@ func renderMetrics(b metrics.Bundle) {
 		c := b.Churn
 		fmt.Printf("  %sChurn rate:%s\n", colorDim, colorReset)
 		if c.AddedLines == 0 {
-			fmt.Printf("  └── %sno added lines to analyze%s\n", colorDim, colorReset)
+			fmt.Printf("  └── %sno lines added in the %dd window before this period%s\n", colorDim, c.WindowDays, colorReset)
 		} else {
 			fmt.Printf("  └── %.0f%% of added lines rewritten within %d days\n", c.Ratio*100, c.WindowDays)
 		}
@@ -231,17 +260,19 @@ func CompareTerminal(comparison git.CompareStats) error {
 	fmt.Println(strings.Repeat("─", 50))
 	fmt.Println()
 
-	fmt.Printf("  %sPeriod%s           %sNet Lines%s   %sDays%s    %sPer Day%s\n",
-		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
-	fmt.Println("  " + strings.Repeat("─", 44))
+	periodWidth := periodLabelWidth(comparison.BeforeLabel, comparison.AfterLabel)
+	fmt.Printf("  %s%-*s%s %sNet Lines%s   %sDays%s    %sPer Day%s\n",
+		colorDim, periodWidth, "Period", colorReset,
+		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+	fmt.Println("  " + strings.Repeat("─", periodWidth+28))
 
-	fmt.Printf("  %-16s %s%-11s%s %-6d  %s%.0f%s\n",
-		comparison.BeforeLabel,
+	fmt.Printf("  %-*s %s%-11s%s %-6d  %s%.0f%s\n",
+		periodWidth, comparison.BeforeLabel,
 		colorDim, formatNumber(comparison.Before.Net), colorReset,
 		beforeDays, colorDim, beforePerDay, colorReset)
 
-	fmt.Printf("  %-16s %s%-11s%s %-6d  %s%.0f%s\n",
-		comparison.AfterLabel,
+	fmt.Printf("  %-*s %s%-11s%s %-6d  %s%.0f%s\n",
+		periodWidth, comparison.AfterLabel,
 		colorCyan, formatNumber(comparison.After.Net), colorReset,
 		afterDays, colorCyan, afterPerDay, colorReset)
 
@@ -262,32 +293,158 @@ func CompareTerminal(comparison git.CompareStats) error {
 	return nil
 }
 
-func printMonthlyBreakdown(stats git.RepoStats) {
-	fmt.Printf("  %sMonthly Breakdown:%s\n", colorDim, colorReset)
-	fmt.Println("  " + strings.Repeat("─", 44))
-	fmt.Printf("  %sMonth%s       %sAdded%s     %sDeleted%s   %sNet%s\n",
-		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
-	fmt.Println("  " + strings.Repeat("─", 44))
-
-	// Sort months
-	var months []string
-	for m := range stats.Monthly {
-		months = append(months, m)
+// pluralize returns word or its plural depending on n.
+func pluralize(n int, word string) string {
+	if n == 1 {
+		return word
 	}
-	sort.Strings(months)
+	return word + "s"
+}
 
-	for _, m := range months {
-		ms := stats.Monthly[m]
-		monthName := getMonthName(ms.Month)
+// periodLabelWidth sizes the period column so long labels
+// ("2025-01:2025-06") do not push the following columns out of alignment.
+func periodLabelWidth(labels ...string) int {
+	width := len("Period")
+	for _, l := range labels {
+		if len(l) > width {
+			width = len(l)
+		}
+	}
+	return width
+}
+
+// TeamCompareTerminal renders a before/after comparison for a whole team,
+// with the team total first and then each member's own change.
+func TeamCompareTerminal(c git.TeamCompareStats) error {
+	beforeDays := git.WorkingDays(c.Before.Since, c.Before.Until)
+	afterDays := git.WorkingDays(c.After.Since, c.After.Until)
+
+	beforePerDay := float64(c.Before.TotalNet) / float64(beforeDays)
+	afterPerDay := float64(c.After.TotalNet) / float64(afterDays)
+	multiplier := benchmark.CalculateMultiplier(beforePerDay, afterPerDay)
+
+	fmt.Println()
+	fmt.Printf("%s%s gitrespect%s - Team Period Comparison\n", colorBold, colorCyan, colorReset)
+	fmt.Println(strings.Repeat("─", 66))
+	fmt.Println()
+
+	periodWidth := periodLabelWidth(c.BeforeLabel, c.AfterLabel)
+	fmt.Printf("  %s%-*s%s %sNet Lines%s   %sDays%s    %sPer Day%s\n",
+		colorDim, periodWidth, "Period", colorReset,
+		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+	fmt.Println("  " + strings.Repeat("─", periodWidth+28))
+	fmt.Printf("  %-*s %s%-11s%s %-6d  %s%.0f%s\n",
+		periodWidth, c.BeforeLabel, colorDim, formatNumber(c.Before.TotalNet), colorReset,
+		beforeDays, colorDim, beforePerDay, colorReset)
+	fmt.Printf("  %-*s %s%-11s%s %-6d  %s%.0f%s\n",
+		periodWidth, c.AfterLabel, colorCyan, formatNumber(c.After.TotalNet), colorReset,
+		afterDays, colorCyan, afterPerDay, colorReset)
+	fmt.Println()
+
+	changeSign := "+"
+	changeColor := colorGreen
+	if multiplier < 1 {
+		changeSign = ""
+		changeColor = colorYellow
+	}
+	fmt.Printf("  %sTeam change:%s %s%s%.1fx productivity %s%s\n",
+		colorDim, colorReset, changeColor, changeSign, multiplier,
+		getChangeEmoji(multiplier), colorReset)
+	fmt.Println()
+
+	emails := c.MemberEmails()
+	if len(emails) == 0 {
+		return nil
+	}
+
+	labelWidth := 20
+	for _, e := range emails {
+		if len(e) > labelWidth {
+			labelWidth = len(e)
+		}
+	}
+
+	fmt.Printf("  %sPer Member%s\n", colorBold, colorReset)
+	fmt.Printf("  %s%-*s%s %sBefore%s     %sAfter%s      %sChange%s\n",
+		colorDim, labelWidth, "Contributor", colorReset,
+		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+	fmt.Println("  " + strings.Repeat("─", labelWidth+34))
+
+	for _, email := range emails {
+		before := c.Before.Members[email]
+		after := c.After.Members[email]
+		bPerDay := float64(before.Net) / float64(beforeDays)
+		aPerDay := float64(after.Net) / float64(afterDays)
+		m := benchmark.CalculateMultiplier(bPerDay, aPerDay)
+
+		mColor := colorGreen
+		sign := "+"
+		if m < 1 {
+			mColor = colorYellow
+			sign = ""
+		}
+		change := fmt.Sprintf("%s%.1fx", sign, m)
+		// A member with no "before" output has no baseline to multiply.
+		if before.Net <= 0 {
+			mColor = colorDim
+			change = "n/a"
+		}
+
+		fmt.Printf("  %-*s %-10s %-10s %s%s%s\n",
+			labelWidth, email,
+			formatNumber(before.Net),
+			formatNumber(after.Net),
+			mColor, change, colorReset)
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// breakdownTitle maps a granularity to its section heading.
+func breakdownTitle(granularity string) string {
+	switch granularity {
+	case "weekly":
+		return "Weekly Breakdown"
+	case "daily":
+		return "Daily Breakdown"
+	default:
+		return "Monthly Breakdown"
+	}
+}
+
+func printBreakdown(stats git.RepoStats, granularity string) {
+	rows := git.Breakdown(stats, granularity)
+	if len(rows) == 0 {
+		return
+	}
+
+	// Weekly and daily labels ("Week of Jan 13 2025") are wider than monthly.
+	labelWidth := 11
+	for _, r := range rows {
+		if len(r.Label) > labelWidth {
+			labelWidth = len(r.Label)
+		}
+	}
+	width := labelWidth + 33
+
+	fmt.Printf("  %s%s:%s\n", colorDim, breakdownTitle(granularity), colorReset)
+	fmt.Println("  " + strings.Repeat("─", width))
+	fmt.Printf("  %s%-*s%s %sAdded%s     %sDeleted%s   %sNet%s\n",
+		colorDim, labelWidth, "Period", colorReset,
+		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+	fmt.Println("  " + strings.Repeat("─", width))
+
+	for _, r := range rows {
 		netColor := colorCyan
-		if ms.Net < 0 {
+		if r.Net < 0 {
 			netColor = colorYellow
 		}
-		fmt.Printf("  %-11s %-9s %-9s %s%-9s%s\n",
-			monthName+" "+fmt.Sprintf("%d", ms.Year),
-			formatNumber(ms.Added),
-			formatNumber(ms.Deleted),
-			netColor, formatNumber(ms.Net), colorReset)
+		fmt.Printf("  %-*s %-9s %-9s %s%-9s%s\n",
+			labelWidth, r.Label,
+			formatNumber(r.Added),
+			formatNumber(r.Deleted),
+			netColor, formatNumber(r.Net), colorReset)
 	}
 	fmt.Println()
 }
@@ -339,27 +496,9 @@ func getChangeEmoji(multiplier float64) string {
 }
 
 func TeamTerminal(stats git.TeamStats, breakdown string, bundles map[string]metrics.Bundle) error {
-	// Calculate working days from combined member activity
-	var firstCommit, lastCommit time.Time
-	for _, m := range stats.Members {
-		if !m.FirstCommit.IsZero() {
-			if firstCommit.IsZero() || m.FirstCommit.Before(firstCommit) {
-				firstCommit = m.FirstCommit
-			}
-		}
-		if !m.LastCommit.IsZero() {
-			if lastCommit.IsZero() || m.LastCommit.After(lastCommit) {
-				lastCommit = m.LastCommit
-			}
-		}
-	}
-
-	var workingDays int
-	if !firstCommit.IsZero() && !lastCommit.IsZero() {
-		workingDays = git.WorkingDays(firstCommit, lastCommit)
-	} else {
-		workingDays = git.WorkingDays(stats.Since, stats.Until)
-	}
+	// Use the requested period, not the active commit span, so team and
+	// single-author daily averages are computed the same way.
+	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.TotalNet) / float64(workingDays)
 
 	dateRange := fmt.Sprintf("%s to %s", stats.Since.Format("Jan 2 2006"), stats.Until.Format("Jan 2 2006"))
@@ -429,9 +568,9 @@ func TeamTerminal(stats git.TeamStats, breakdown string, bundles map[string]metr
 		renderMetrics(b)
 	}
 
-	// Team-wide monthly breakdown
-	if breakdown == "monthly" && len(stats.Monthly) > 0 {
-		printMonthlyBreakdown(git.RepoStats{Monthly: stats.Monthly})
+	// Team-wide breakdown
+	if breakdown != "" {
+		printBreakdown(git.RepoStats{Monthly: stats.Monthly, Daily: stats.Daily}, breakdown)
 	}
 
 	return nil

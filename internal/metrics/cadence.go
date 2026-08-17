@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/juangracia/gitrespect/internal/git"
 )
 
 // Cadence measures how frequently an author commits to the main branch.
@@ -26,17 +28,14 @@ func ComputeCadence(repoPath, author string, since, until time.Time) (Cadence, e
 	}
 	c.MainBranch = branch
 
-	// git --since is exclusive (commits on that calendar day are excluded), so
-	// subtract one day to include commits that fall on the since date itself.
-	sinceStr := since.AddDate(0, 0, -1).Format("2006-01-02")
-	args := []string{
-		"-C", repoPath, "log", branch,
-		"--author=" + author,
-		"--since=" + sinceStr,
-		"--until=" + until.Format("2006-01-02"),
+	args := []string{"-C", repoPath, "log", branch}
+	args = append(args, git.AuthorArgs(author)...)
+	args = append(args,
+		"--since="+git.TimeArg(since),
+		"--until="+git.TimeArg(until),
 		"--no-merges",
 		"--format=%ct",
-	}
+	)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return c, fmt.Errorf("git log: %w", err)
