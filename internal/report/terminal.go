@@ -137,7 +137,7 @@ func Terminal(stats git.RepoStats, breakdown string, bundle metrics.Bundle) erro
 }
 
 func renderMetrics(b metrics.Bundle) {
-	if b.CommitSize != nil {
+	if b.CommitSize != nil && b.CommitSize.Total > 0 {
 		d := b.CommitSize
 		fmt.Printf("  %sCommit size distribution:%s\n", colorDim, colorReset)
 		rows := []struct {
