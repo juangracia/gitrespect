@@ -97,7 +97,7 @@ func ScanContributors(paths []string, since, until time.Time) ([]Contributor, er
 		// %aE and %aN are the mailmap-mapped author fields. The lower-case
 		// %ae and %an are not mapped, so a repo carrying a .mailmap would
 		// still report each alias as its own contributor if they were used.
-		args = append(args, "--pretty=format:%ae|%an")
+		args = append(args, "--pretty=format:%aE|%aN")
 		if !since.IsZero() {
 			args = append(args, "--since="+TimeArg(since))
 		}
