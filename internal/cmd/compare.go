@@ -33,8 +33,24 @@ var compareCmd = &cobra.Command{
 Useful for measuring the impact of tooling changes, AI adoption, or other
 workflow improvements.
 
-Example:
-  gitrespect compare --before=2025-01:2025-07 --after=2025-08:2025-12`,
+Whose commits: pass -a for one person, -t for a team, or --all-authors for
+everything in the repository. With none of those it uses the repository's
+configured user.email. --roster and --alias merge one person's several
+addresses, exactly as they do for the main command.
+
+-b/--breakdown adds each period's trend. The two periods are broken down
+SEPARATELY, since they can differ in length and need not be adjacent.
+
+--data=prs compares merge request volume instead of lines of code, giving the
+same Nx multiplier for review throughput. It queries the platform rather than
+local git, so it needs --group (GitLab) or --org (GitHub), and a token from
+--token or GITLAB_TOKEN/GITHUB_TOKEN, or a locally authenticated glab/gh.
+
+Examples:
+  gitrespect compare --before=2025-01:2025-07 --after=2025-08:2025-12
+  gitrespect compare -t a@x.com,b@x.com --before=2025-01:2025-06 --after=2025-07:2025-12 -b monthly
+  gitrespect compare --all-authors --before=2025-01:2025-06 --after=2025-07:2025-12
+  gitrespect compare --data=prs --group my-group/web --before=2025-01:2025-06 --after=2025-07:2025-12`,
 	RunE: runCompare,
 }
 
@@ -117,6 +133,42 @@ func runComparePRs(cmd *cobra.Command, before, after prs.Window) error {
 	}
 }
 
+// warnBreakdownUnsupported says so when --breakdown cannot be rendered, rather
+// than accepting the flag and quietly producing a report without it.
+//
+// The HTML comparison has no breakdown section yet. Silence would make a
+// documented flag look broken, which is exactly the failure this release set out
+// to remove elsewhere.
+func warnBreakdownUnsupported(output string) {
+	if breakdown != "" && output == "html" {
+		fmt.Fprintln(os.Stderr,
+			"note: --breakdown is not rendered in the HTML comparison yet; use --output terminal or json for the per-period trend")
+	}
+}
+
+// checkCompareDataFlags rejects review-platform flags on a lines comparison.
+//
+// Every one of them is documented as "With --data=prs", so accepting and
+// discarding them hands back a plausible lines report to someone who meant to
+// query a platform. --token is the worst of the set: silently ignoring a
+// credential the user deliberately supplied is never the right default.
+func checkCompareDataFlags(cmd *cobra.Command) error {
+	if compareData == dataPRs {
+		return nil
+	}
+	var set []string
+	for _, name := range []string{"provider", "group", "org", "map", "token", "api-url"} {
+		if cmd.Flags().Changed(name) {
+			set = append(set, "--"+name)
+		}
+	}
+	if len(set) > 0 {
+		return fmt.Errorf("%s only apply to --data=prs, but --data is %q: add --data=prs, or drop %s",
+			strings.Join(set, ", "), compareData, strings.Join(set, ", "))
+	}
+	return nil
+}
+
 func parsePeriod(period string) (time.Time, time.Time, error) {
 	parts := strings.Split(period, ":")
 	if len(parts) != 2 {
@@ -177,12 +229,16 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	if err := validateOutputFlags(breakdown, output, theme); err != nil {
 		return err
 	}
-	if err := checkSelectionConflicts(); err != nil {
+	if err := checkSelectionConflicts(cmd); err != nil {
+		return err
+	}
+	if err := checkCompareDataFlags(cmd); err != nil {
 		return err
 	}
 	if err := git.ValidateExcludePatterns(exclude); err != nil {
 		return err
 	}
+	warnUnusedFile(output, file)
 
 	beforeStart, beforeEnd, err := parsePeriod(beforePeriod)
 	if err != nil {
@@ -222,13 +278,14 @@ func runCompare(cmd *cobra.Command, args []string) error {
 			BeforeLabel: beforePeriod,
 			AfterLabel:  afterPeriod,
 		}
+		warnBreakdownUnsupported(output)
 		switch output {
 		case "json":
-			return report.TeamCompareJSON(comparison, file)
+			return report.TeamCompareJSONWithBreakdown(comparison, file, breakdown)
 		case "html":
 			return report.TeamCompareHTML(comparison, file, theme)
 		default:
-			return report.TeamCompareTerminal(comparison)
+			return report.TeamCompareTerminalWithBreakdown(comparison, breakdown)
 		}
 	}
 
@@ -275,9 +332,10 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		AfterLabel:  afterPeriod,
 	}
 
+	warnBreakdownUnsupported(output)
 	switch output {
 	case "json":
-		return report.CompareJSON(comparison, file)
+		return report.CompareJSONWithBreakdown(comparison, file, breakdown)
 	case "html":
 		return report.CompareHTML(comparison, file, theme)
 	default:

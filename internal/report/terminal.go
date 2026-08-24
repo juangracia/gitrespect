@@ -467,10 +467,25 @@ func printBreakdown(stats git.RepoStats, granularity string) {
 	width := labelWidth + 33
 
 	fmt.Printf("  %s%s:%s\n", colorDim, breakdownTitle(granularity), colorReset)
+	// Size the number columns from the widest value actually present. A fixed
+	// width silently broke the alignment of every row once a total reached
+	// seven figures, which is routine for a year of team output.
+	numWidth := 9
+	for _, r := range rows {
+		for _, v := range []int{r.Added, r.Deleted, r.Net} {
+			if n := len(formatNumber(v)); n > numWidth {
+				numWidth = n
+			}
+		}
+	}
+	width = labelWidth + 3*(numWidth+1) + 3
+
 	fmt.Println("  " + strings.Repeat("─", width))
-	fmt.Printf("  %s%-*s%s %sAdded%s     %sDeleted%s   %sNet%s\n",
+	fmt.Printf("  %s%-*s%s %s%-*s%s %s%-*s%s %sNet%s\n",
 		colorDim, labelWidth, "Period", colorReset,
-		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+		colorDim, numWidth, "Added", colorReset,
+		colorDim, numWidth, "Deleted", colorReset,
+		colorDim, colorReset)
 	fmt.Println("  " + strings.Repeat("─", width))
 
 	for _, r := range rows {
@@ -478,11 +493,11 @@ func printBreakdown(stats git.RepoStats, granularity string) {
 		if r.Net < 0 {
 			netColor = colorYellow
 		}
-		fmt.Printf("  %-*s %-9s %-9s %s%-9s%s\n",
+		fmt.Printf("  %-*s %-*s %-*s %s%-*s%s\n",
 			labelWidth, r.Label,
-			formatNumber(r.Added),
-			formatNumber(r.Deleted),
-			netColor, formatNumber(r.Net), colorReset)
+			numWidth, formatNumber(r.Added),
+			numWidth, formatNumber(r.Deleted),
+			netColor, numWidth, formatNumber(r.Net), colorReset)
 	}
 	fmt.Println()
 }

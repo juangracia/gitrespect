@@ -86,7 +86,14 @@ func init() {
 // silently letting one win would produce a confident report about the wrong
 // people. Failing here costs a re-run; guessing costs a wrong number that
 // nobody catches.
-func checkSelectionConflicts() error {
+func checkSelectionConflicts(cmd *cobra.Command) error {
+	// An explicit --top 0 is a mistake, not a request for the default. Treated
+	// as unset it silently becomes a single-author run for whoever git config
+	// names, which is a different person than the user asked about, and it also
+	// slips past the mutual-exclusion check below.
+	if cmd != nil && cmd.Flags().Changed("top") && topN <= 0 {
+		return fmt.Errorf("invalid --top %d: expected a positive number of contributors", topN)
+	}
 	selectors := []struct {
 		on   bool
 		name string
@@ -196,6 +203,13 @@ func resolveAuthor(explicit, repoPath string) (string, error) {
 // drawn from breakdown buckets and only appears in HTML, so asking for one
 // without either is a mistake worth naming rather than a silent no-op.
 func warnUnusedChart(output string, chart bool, breakdown string) {
+	// --highlight is validated against the member list, so a user who mistypes
+	// a name is told. A user who spells it correctly but omits --chart gets
+	// that same confirmation and then no chart at all, which reads as the flag
+	// having silently failed.
+	if highlight != "" && !chart {
+		fmt.Fprintln(os.Stderr, "note: --highlight only affects the trend chart; add --chart to see it")
+	}
 	if !chart {
 		return
 	}
@@ -260,7 +274,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	if err := validateOutputFlags(breakdown, output, theme); err != nil {
 		return err
 	}
-	if err := checkSelectionConflicts(); err != nil {
+	if err := checkSelectionConflicts(cmd); err != nil {
 		return err
 	}
 	if err := git.ValidateExcludePatterns(exclude); err != nil {
@@ -390,6 +404,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	default:
 		if perRepo && len(allStats) > 1 {
 			return report.TerminalWithRepos(combined, allStats, breakdown, bundle)
+		}
+		if perRepo {
+			// One repository has nothing to break down by repository, and
+			// printing the ordinary report with no explanation looks like the
+			// flag was ignored.
+			fmt.Fprintln(os.Stderr, "note: --per-repo needs more than one repository; showing the single-repo report")
 		}
 		return report.Terminal(combined, breakdown, bundle)
 	}

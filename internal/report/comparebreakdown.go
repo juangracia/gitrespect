@@ -30,6 +30,33 @@ func CompareTerminalWithBreakdown(c git.CompareStats, granularity string) error 
 	return nil
 }
 
+// TeamCompareTerminalWithBreakdown prints a team period comparison, optionally
+// followed by a team-wide breakdown of each period.
+//
+// Team mode gets the same treatment as a single author for the same reason: the
+// question after "did the team's output change" is "when did it change", and
+// answering it for one person but not for a team would make the flag mean
+// different things depending on who you asked about.
+func TeamCompareTerminalWithBreakdown(c git.TeamCompareStats, granularity string) error {
+	if err := TeamCompareTerminal(c); err != nil {
+		return err
+	}
+	if granularity == "" {
+		return nil
+	}
+
+	printLabelledBreakdown(teamAsRepoStats(c.Before), c.BeforeLabel, "Before", granularity)
+	printLabelledBreakdown(teamAsRepoStats(c.After), c.AfterLabel, "After", granularity)
+	return nil
+}
+
+// teamAsRepoStats adapts a team's aggregated buckets to the shape the shared
+// breakdown renderer takes. The team totals are already summed across members,
+// so this is a view rather than a conversion.
+func teamAsRepoStats(t git.TeamStats) git.RepoStats {
+	return git.RepoStats{Monthly: t.Monthly, Daily: t.Daily}
+}
+
 // printLabelledBreakdown heads one period's table with which side of the
 // comparison it is, since two identically shaped tables in sequence are
 // otherwise impossible to tell apart.
