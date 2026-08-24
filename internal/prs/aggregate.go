@@ -19,7 +19,12 @@ const daysPerMonth = 30.0
 // no clock and no filesystem, so bucketing, identity matching and lead time
 // are all testable on their own.
 func Aggregate(f Fetched, opts Options) (Result, error) {
-	matcher, err := NewMatcherFor(opts.people(), opts.Mappings)
+	// Matching and filtering are separate questions. A --team says who to
+	// count, so an account it does not claim is dropped. A bare --roster only
+	// says who an account belongs to, so an account it does not claim keeps
+	// its own row rather than disappearing from the group total.
+	identities, filtering := opts.identities()
+	matcher, err := NewMatcherFor(identities, opts.Mappings)
 	if err != nil {
 		return Result{}, err
 	}
@@ -30,7 +35,7 @@ func Aggregate(f Fetched, opts Options) (Result, error) {
 		Since:       opts.Since,
 		Until:       opts.Until,
 		Granularity: opts.Granularity,
-		Filtered:    matcher.Filtering(),
+		Filtered:    filtering,
 		Truncated:   f.Truncated,
 		Note:        f.Note,
 		Requests:    f.Requests,
@@ -54,9 +59,9 @@ func Aggregate(f Fetched, opts Options) (Result, error) {
 		return b
 	}
 
-	// Requested identities are seeded even when they opened nothing: a team
-	// member with zero merge requests in the window is a real answer, not a
-	// missing row.
+	// Known identities are seeded even when they opened nothing: a team member
+	// or roster entry with zero merge requests in the window is a real answer,
+	// not a missing row.
 	for _, label := range matcher.Labels() {
 		newBucket(label, label)
 	}
@@ -70,19 +75,18 @@ func Aggregate(f Fetched, opts Options) (Result, error) {
 			continue
 		}
 
-		key, label := "", ""
-		if matcher.Filtering() {
-			matched, ok := matcher.Match(mr)
-			if !ok {
-				unmatched[mr.authorLabel()]++
-				res.UnmatchedTotal++
-				continue
-			}
+		var key, label string
+		switch matched, ok := matcher.Match(mr); {
+		case ok:
 			key, label = matched, matched
-		} else {
-			// Without a filter each platform account is its own identity.
-			// Group on the username when there is one, since display names
-			// change and emails are usually absent.
+		case filtering:
+			unmatched[mr.authorLabel()]++
+			res.UnmatchedTotal++
+			continue
+		default:
+			// Nothing claimed this account and nothing was asked to, so it is
+			// its own identity. Group on the username when there is one, since
+			// display names change and emails are usually absent.
 			label = mr.authorLabel()
 			if mr.AuthorUser != "" {
 				label = mr.AuthorUser
@@ -148,7 +152,7 @@ func Aggregate(f Fetched, opts Options) (Result, error) {
 	// An explicit --team is always shown in full: the user named those people
 	// and a missing row would read as "they opened nothing".
 	res.AuthorsTotal = len(res.Authors)
-	if opts.Top > 0 && !matcher.Filtering() && len(res.Authors) > opts.Top {
+	if opts.Top > 0 && !filtering && len(res.Authors) > opts.Top {
 		res.Authors = res.Authors[:opts.Top]
 	}
 

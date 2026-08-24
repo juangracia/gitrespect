@@ -382,6 +382,155 @@ func TestPercentile(t *testing.T) {
 	}
 }
 
+// mrFrom builds a merge request whose platform account carries an email, which
+// is what a roster has to match against.
+func mrFrom(t *testing.T, user, email, created string) MergeRequest {
+	t.Helper()
+	m := mr(t, user, created)
+	m.AuthorEmail = email
+	m.ID = email + created
+	return m
+}
+
+// The headline roster guarantee: one human with two addresses is one row.
+// Two of them would double the row count and halve each number, which is
+// exactly the miscount the roster exists to prevent.
+func TestAggregateRosterPersonWithTwoAddressesIsOneRow(t *testing.T) {
+	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
+	opts.People = []Person{{
+		Label: "Jane Doe",
+		Keys:  []string{"jane@corp.com", "j.doe@personal.com"},
+	}}
+
+	f := Fetched{Items: []MergeRequest{
+		mrFrom(t, "jane", "jane@corp.com", "2025-01-05 10:00"),
+		mrFrom(t, "jdoe-personal", "j.doe@personal.com", "2025-01-06 10:00"),
+		mrFrom(t, "jane", "jane@corp.com", "2025-01-07 10:00"),
+	}}
+
+	res, err := Aggregate(f, opts)
+	if err != nil {
+		t.Fatalf("Aggregate failed: %v", err)
+	}
+	if len(res.Authors) != 1 {
+		t.Fatalf("got %d rows, want 1: a roster person's addresses must not split: %+v", len(res.Authors), res.Authors)
+	}
+	if res.Authors[0].Identity != "Jane Doe" {
+		t.Fatalf("row labelled %q, want the canonical name", res.Authors[0].Identity)
+	}
+	if res.Authors[0].Opened != 3 {
+		t.Fatalf("Opened = %d, want all 3 merge requests under one person", res.Authors[0].Opened)
+	}
+	// Both accounts should be traceable from the row.
+	if len(res.Authors[0].Handles) != 2 {
+		t.Fatalf("Handles = %v, want both accounts listed", res.Authors[0].Handles)
+	}
+}
+
+// The roster must not become a way for accounts to disappear quietly. This is
+// the property that makes the identity matching auditable rather than lossy.
+func TestAggregateRosterStillReportsUnmatchedAccounts(t *testing.T) {
+	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
+	opts.People = []Person{{Label: "Jane Doe", Keys: []string{"jane@corp.com"}}}
+
+	f := Fetched{Items: []MergeRequest{
+		mrFrom(t, "jane", "jane@corp.com", "2025-01-05 10:00"),
+		mr(t, "renovate", "2025-01-06 10:00"),
+		mr(t, "dependabot", "2025-01-07 10:00"),
+	}}
+
+	res, err := Aggregate(f, opts)
+	if err != nil {
+		t.Fatalf("Aggregate failed: %v", err)
+	}
+	if res.UnmatchedTotal != 2 || res.UnmatchedAccounts != 2 {
+		t.Fatalf("unmatched = %d/%d accounts, want 2 and 2", res.UnmatchedTotal, res.UnmatchedAccounts)
+	}
+	handles := map[string]bool{}
+	for _, u := range res.Unmatched {
+		handles[u.Handle] = true
+	}
+	if !handles["renovate"] || !handles["dependabot"] {
+		t.Fatalf("Unmatched = %+v, want both bot accounts named", res.Unmatched)
+	}
+}
+
+// A bare roster answers "who is this account", not "who am I counting", so
+// nothing is dropped and the group total stays intact.
+func TestAggregateBareRosterGroupsWithoutFiltering(t *testing.T) {
+	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
+	opts.Roster = []Person{
+		{Label: "Jane Doe", Keys: []string{"jane@corp.com", "j.doe@personal.com"}},
+		{Label: "Bob Smith", Keys: []string{"bob@corp.com"}},
+	}
+
+	f := Fetched{Items: []MergeRequest{
+		mrFrom(t, "jane", "jane@corp.com", "2025-01-05 10:00"),
+		mrFrom(t, "jdoe-personal", "j.doe@personal.com", "2025-01-06 10:00"),
+		mr(t, "renovate", "2025-01-07 10:00"),
+	}}
+
+	res, err := Aggregate(f, opts)
+	if err != nil {
+		t.Fatalf("Aggregate failed: %v", err)
+	}
+	if res.Filtered {
+		t.Fatal("a bare roster must not filter: it says who an account is, not who to count")
+	}
+	if res.Opened != 3 {
+		t.Fatalf("Opened = %d, want every account still counted", res.Opened)
+	}
+	if res.UnmatchedTotal != 0 {
+		t.Fatalf("UnmatchedTotal = %d, want 0: nothing was dropped", res.UnmatchedTotal)
+	}
+
+	byID := map[string]AuthorStats{}
+	for _, a := range res.Authors {
+		byID[a.Identity] = a
+	}
+	if got := byID["Jane Doe"]; got.Opened != 2 {
+		t.Errorf("Jane Doe = %d, want her two addresses folded together", got.Opened)
+	}
+	// An account the roster does not know keeps its own row rather than
+	// vanishing from the group.
+	if got, ok := byID["renovate"]; !ok || got.Opened != 1 {
+		t.Errorf("renovate = %+v, want its own row", got)
+	}
+	// A roster member the platform never saw must show as zero, not vanish.
+	bob, ok := byID["Bob Smith"]
+	if !ok {
+		t.Fatal("a roster member with no merge requests must still appear")
+	}
+	if bob.Opened != 0 {
+		t.Errorf("Bob Smith = %d, want an explicit zero", bob.Opened)
+	}
+}
+
+func TestAggregateFilterTakesPrecedenceOverRoster(t *testing.T) {
+	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
+	opts.People = []Person{{Label: "Jane Doe", Keys: []string{"jane@corp.com"}}}
+	opts.Roster = []Person{{Label: "Bob Smith", Keys: []string{"bob@corp.com"}}}
+
+	f := Fetched{Items: []MergeRequest{
+		mrFrom(t, "jane", "jane@corp.com", "2025-01-05 10:00"),
+		mrFrom(t, "bob", "bob@corp.com", "2025-01-06 10:00"),
+	}}
+
+	res, err := Aggregate(f, opts)
+	if err != nil {
+		t.Fatalf("Aggregate failed: %v", err)
+	}
+	if !res.Filtered {
+		t.Fatal("an explicit filter must still filter when a roster is also present")
+	}
+	if len(res.Authors) != 1 || res.Authors[0].Identity != "Jane Doe" {
+		t.Fatalf("authors = %+v, want only the filtered person", res.Authors)
+	}
+	if res.UnmatchedTotal != 1 {
+		t.Fatalf("UnmatchedTotal = %d, want bob reported as excluded", res.UnmatchedTotal)
+	}
+}
+
 func TestAggregateTopTrimsTheContributorTable(t *testing.T) {
 	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
 	opts.Top = 2

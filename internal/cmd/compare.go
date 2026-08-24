@@ -82,7 +82,11 @@ func runComparePRs(cmd *cobra.Command, before, after prs.Window) error {
 	if err != nil {
 		return err
 	}
-	authors, err := resolvePRAuthors(author, team)
+	roster, err := buildRoster(rosterPath, aliasSpecs)
+	if err != nil {
+		return err
+	}
+	people, grouping, err := resolvePRIdentities(author, team, roster)
 	if err != nil {
 		return err
 	}
@@ -93,7 +97,8 @@ func runComparePRs(cmd *cobra.Command, before, after prs.Window) error {
 	comparison, err := prs.FetchComparison(cmd.Context(), prs.Options{
 		Provider: prsProvider,
 		Scope:    scope,
-		Authors:  authors,
+		People:   people,
+		Roster:   grouping,
 		Mappings: prsMap,
 		Token:    prsToken,
 		BaseURL:  prsAPIURL,

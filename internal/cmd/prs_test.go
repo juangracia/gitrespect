@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/juangracia/gitrespect/internal/git"
 	"github.com/juangracia/gitrespect/internal/prs"
 	"github.com/spf13/cobra"
 )
@@ -56,29 +57,99 @@ func TestResolvePRScopeTrimsWhitespace(t *testing.T) {
 	}
 }
 
-func TestResolvePRAuthors(t *testing.T) {
-	got, err := resolvePRAuthors("me@corp.com", nil)
-	if err != nil || len(got) != 1 || got[0] != "me@corp.com" {
-		t.Fatalf("--author = (%v, %v), want a one element list", got, err)
+func TestResolvePRIdentities(t *testing.T) {
+	people, grouping, err := resolvePRIdentities("me@corp.com", nil, nil)
+	if err != nil || len(people) != 1 || people[0].Label != "me@corp.com" {
+		t.Fatalf("--author = (%v, %v), want a one element filter", people, err)
+	}
+	if grouping != nil {
+		t.Fatalf("grouping = %v, want nil when a filter is given", grouping)
 	}
 
-	got, err = resolvePRAuthors("", []string{"a@x.com", "b@x.com"})
-	if err != nil || len(got) != 2 {
-		t.Fatalf("--team = (%v, %v), want both members", got, err)
+	people, _, err = resolvePRIdentities("", []string{"a@x.com", "b@x.com"}, nil)
+	if err != nil || len(people) != 2 {
+		t.Fatalf("--team = (%v, %v), want both members", people, err)
 	}
 
 	// No filter is legitimate: it reports the whole group, which is what
 	// makes a team average meaningful.
-	got, err = resolvePRAuthors("", nil)
-	if err != nil || got != nil {
-		t.Fatalf("no filter = (%v, %v), want nil and no error", got, err)
+	people, grouping, err = resolvePRIdentities("", nil, nil)
+	if err != nil || len(people) != 0 || len(grouping) != 0 {
+		t.Fatalf("no filter = (%v, %v, %v), want empty and no error", people, grouping, err)
 	}
 }
 
-func TestResolvePRAuthorsRejectsAuthorWithTeam(t *testing.T) {
-	_, err := resolvePRAuthors("me@corp.com", []string{"a@x.com"})
+func TestResolvePRIdentitiesRejectsAuthorWithTeam(t *testing.T) {
+	_, _, err := resolvePRIdentities("me@corp.com", []string{"a@x.com"}, nil)
 	if err == nil {
 		t.Fatal("expected --author and --team to be mutually exclusive")
+	}
+}
+
+// The whole point of a roster is that one human with several addresses is
+// counted once. Two artefacts in the same release disagreeing about who
+// someone is would be worse than having no roster at all.
+func TestResolvePRIdentitiesFoldsRosterAddressesIntoOnePerson(t *testing.T) {
+	roster := git.Roster{{Name: "Jane Doe", Emails: []string{"jane@corp.com", "j.doe@personal.com"}}}
+
+	// Naming either address, or the canonical name, yields the same person.
+	for _, token := range []string{"jane@corp.com", "j.doe@personal.com", "Jane Doe"} {
+		people, _, err := resolvePRIdentities("", []string{token}, roster)
+		if err != nil {
+			t.Fatalf("resolvePRIdentities(%q) failed: %v", token, err)
+		}
+		if len(people) != 1 {
+			t.Fatalf("token %q produced %d identities, want 1", token, len(people))
+		}
+		if people[0].Label != "Jane Doe" {
+			t.Errorf("token %q labelled %q, want the canonical name", token, people[0].Label)
+		}
+		if len(people[0].Keys) != 2 {
+			t.Errorf("token %q carried %d keys, want both addresses", token, len(people[0].Keys))
+		}
+	}
+
+	// Naming both addresses must not produce two rows for one human.
+	people, _, err := resolvePRIdentities("", []string{"jane@corp.com", "j.doe@personal.com"}, roster)
+	if err != nil {
+		t.Fatalf("resolvePRIdentities failed: %v", err)
+	}
+	if len(people) != 1 {
+		t.Fatalf("got %d identities, want one person merged from two addresses", len(people))
+	}
+}
+
+// A bare roster says who an account belongs to, not who to count, so it groups
+// without filtering. Making it a selector would silently shrink the group and
+// destroy the denominator a team average needs.
+func TestResolvePRIdentitiesBareRosterGroupsWithoutFiltering(t *testing.T) {
+	roster := git.Roster{
+		{Name: "Jane Doe", Emails: []string{"jane@corp.com"}},
+		{Name: "Bob Smith", Emails: []string{"bob@corp.com"}},
+	}
+
+	people, grouping, err := resolvePRIdentities("", nil, roster)
+	if err != nil {
+		t.Fatalf("resolvePRIdentities failed: %v", err)
+	}
+	if len(people) != 0 {
+		t.Fatalf("people = %v, want no filter from a bare roster", people)
+	}
+	if len(grouping) != 2 {
+		t.Fatalf("grouping = %v, want both roster entries", grouping)
+	}
+}
+
+func TestResolvePRIdentitiesUnknownTokenFallsBackToItself(t *testing.T) {
+	roster := git.Roster{{Name: "Jane Doe", Emails: []string{"jane@corp.com"}}}
+
+	people, _, err := resolvePRIdentities("stranger@corp.com", nil, roster)
+	if err != nil {
+		t.Fatalf("resolvePRIdentities failed: %v", err)
+	}
+	// Dropping an unregistered person would silently shrink the report.
+	if len(people) != 1 || people[0].Label != "stranger@corp.com" {
+		t.Fatalf("people = %v, want the token kept as its own identity", people)
 	}
 }
 

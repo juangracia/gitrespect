@@ -11,13 +11,25 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Flags shared by prsCmd and by compareCmd's --data=prs path. Only one command
+// runs per invocation, so sharing is safe today, but a third consumer would be
+// reading whatever the other two last defaulted: give it its own vars rather
+// than adding to this block.
 var (
-	prsProvider  string
-	prsGroup     string
-	prsOrg       string
+	prsProvider string
+	prsGroup    string
+	prsOrg      string
+	prsMap      []string
+	prsToken    string
+	prsAPIURL   string
+)
+
+// Flags used only by prsCmd. The analyze command's equivalents live in
+// root.go; these are separate so the two commands cannot default over each
+// other.
+var (
 	prsAuthor    string
 	prsTeam      []string
-	prsMap       []string
 	prsSince     string
 	prsUntil     string
 	prsYear      int
@@ -26,8 +38,6 @@ var (
 	prsFile      string
 	prsTop       int
 	prsTheme     string
-	prsToken     string
-	prsAPIURL    string
 )
 
 var prsCmd = &cobra.Command{
@@ -65,6 +75,8 @@ func init() {
 	prsCmd.Flags().StringVarP(&prsAuthor, "author", "a", "", "Filter by a single identity (email, username or display name)")
 	prsCmd.Flags().StringSliceVarP(&prsTeam, "team", "t", nil, "Team mode: report multiple identities (comma-separated)")
 	prsCmd.Flags().StringArrayVar(&prsMap, "map", nil, "Pin a platform account to an identity: --map you@corp.com=handle (repeatable)")
+	prsCmd.Flags().StringVar(&rosterPath, "roster", "", "Roster file mapping a canonical name to that person's email addresses")
+	prsCmd.Flags().StringArrayVar(&aliasSpecs, "alias", nil, "Inline identity: 'Name=a@x.com,b@x.com' (repeatable)")
 	prsCmd.Flags().StringVarP(&prsSince, "since", "s", "30 days ago", "Start date (YYYY-MM-DD or relative like '30 days ago')")
 	prsCmd.Flags().StringVarP(&prsUntil, "until", "u", "", "End date (default: now)")
 	prsCmd.Flags().IntVar(&prsYear, "year", 0, "Filter by year (e.g., --year=2025)")
@@ -90,7 +102,12 @@ func runPRs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	authors, err := resolvePRAuthors(prsAuthor, prsTeam)
+	roster, err := buildRoster(rosterPath, aliasSpecs)
+	if err != nil {
+		return err
+	}
+
+	people, grouping, err := resolvePRIdentities(prsAuthor, prsTeam, roster)
 	if err != nil {
 		return err
 	}
@@ -103,7 +120,8 @@ func runPRs(cmd *cobra.Command, args []string) error {
 	opts := prs.Options{
 		Provider:    prsProvider,
 		Scope:       scope,
-		Authors:     authors,
+		People:      people,
+		Roster:      grouping,
 		Mappings:    prsMap,
 		Since:       since,
 		Until:       until,
@@ -155,21 +173,42 @@ func resolvePRScope(provider, group, org string) (string, error) {
 	}
 }
 
-// resolvePRAuthors folds --author and --team into one identity list. Passing
-// both is rejected rather than silently preferring one.
-func resolvePRAuthors(author string, team []string) ([]string, error) {
-	if len(team) > 0 {
+// prsPeople converts git identities into the prs package's grouped form, so a
+// person the roster knows under three commit addresses stays one row in the
+// merge request table instead of splitting into three.
+func prsPeople(ids []git.Identity) []prs.Person {
+	out := make([]prs.Person, 0, len(ids))
+	for _, id := range ids {
+		// Label is the canonical name, matching what the git report now
+		// prints, so the two artefacts in a release name the same human the
+		// same way.
+		out = append(out, prs.Person{Label: id.Label(), Keys: id.Emails})
+	}
+	return out
+}
+
+// resolvePRIdentities turns --author/--team/--roster/--alias into the two sets
+// prs.Options distinguishes.
+//
+// people both filters and groups: it is the answer to "who am I counting".
+// grouping only groups: a roster describes who an account belongs to, not
+// which accounts to count, so on its own it folds recognised accounts under
+// their canonical names and leaves the rest of the group visible. Passing
+// --author and --team together is rejected rather than silently preferring one.
+func resolvePRIdentities(author string, team []string, roster git.Roster) (people, grouping []prs.Person, err error) {
+	switch {
+	case len(team) > 0:
 		if err := checkTeamConflicts(author); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return team, nil
+		return prsPeople(expandTeam(team, roster)), nil, nil
+	case strings.TrimSpace(author) != "":
+		return prsPeople([]git.Identity{expandIdentity(author, roster)}), nil, nil
+	default:
+		// No filter means every account in the scope, which is the only way a
+		// "versus the team" comparison has a denominator.
+		return nil, prsPeople(roster), nil
 	}
-	if strings.TrimSpace(author) != "" {
-		return []string{author}, nil
-	}
-	// No filter means every account in the scope, which is the only way a
-	// "versus the team" comparison has a denominator.
-	return nil, nil
 }
 
 // resolvePRWindow parses the date flags the same way the analyze command does,

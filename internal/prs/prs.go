@@ -184,8 +184,17 @@ type Options struct {
 	Authors []string
 	// People is the grouped form of Authors, for callers that already know one
 	// person owns several addresses (a roster). It takes precedence over
-	// Authors when set.
+	// Authors when set. Like Authors, it filters: accounts it does not claim
+	// are excluded from the report and reported as unmatched.
 	People []Person
+	// Roster groups without filtering. A roster describes who people are, not
+	// which of them to count, so on its own it folds the accounts it
+	// recognises under their canonical names and leaves every other account
+	// as its own row. Roster members with no merge requests still get a row,
+	// at zero, so a person the platform never saw does not silently vanish.
+	// Ignored when Authors or People is set, where the filter is the answer to
+	// "who am I counting".
+	Roster []Person
 	// Mappings are "email=handle" pairs that pin a platform account to an
 	// identity when the heuristics in Matcher cannot bridge the two.
 	Mappings []string
@@ -239,7 +248,8 @@ func (o Options) validate() error {
 	return nil
 }
 
-// people returns the identities to report on in their grouped form.
+// people returns the filtering identities in their grouped form: the accounts
+// this report is restricted to.
 func (o Options) people() []Person {
 	if len(o.People) > 0 {
 		return o.People
@@ -249,6 +259,16 @@ func (o Options) people() []Person {
 		out = append(out, Person{Label: a})
 	}
 	return out
+}
+
+// identities returns the set the matcher is built from, and whether matching
+// it also filters. A filter answers "who am I counting"; a bare roster only
+// answers "who is this account", so it groups and nothing is dropped.
+func (o Options) identities() (people []Person, filtering bool) {
+	if p := o.people(); len(p) > 0 {
+		return p, true
+	}
+	return o.Roster, false
 }
 
 // getenv reads an environment variable through the injectable hook so tests

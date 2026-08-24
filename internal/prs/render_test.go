@@ -69,6 +69,39 @@ func TestWriteTerminalSurfacesUnmatchedAccounts(t *testing.T) {
 	}
 }
 
+// A roster folds accounts under canonical names, which is exactly the change
+// that could quietly swallow an account nobody claimed. The warning has to
+// survive it, or identity matching stops being auditable.
+func TestWriteTerminalSurfacesUnmatchedAccountsUnderARoster(t *testing.T) {
+	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
+	opts.People = []Person{{Label: "Jane Doe", Keys: []string{"jane@corp.com", "j.doe@personal.com"}}}
+
+	res, err := Aggregate(Fetched{Items: []MergeRequest{
+		mrFrom(t, "jane", "jane@corp.com", "2025-01-05 10:00"),
+		mrFrom(t, "jdoe-personal", "j.doe@personal.com", "2025-01-06 10:00"),
+		mr(t, "renovate", "2025-01-07 10:00"),
+	}}, opts)
+	if err != nil {
+		t.Fatalf("Aggregate failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := WriteTerminal(&buf, res); err != nil {
+		t.Fatalf("WriteTerminal failed: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "Jane Doe") {
+		t.Errorf("the canonical name should label the row:\n%s", out)
+	}
+	if !strings.Contains(out, "renovate") {
+		t.Errorf("the unmatched account must still be named under a roster:\n%s", out)
+	}
+	if !strings.Contains(out, "--map") {
+		t.Errorf("the report should still name --map as the fix:\n%s", out)
+	}
+}
+
 func TestWriteTerminalReportsTruncation(t *testing.T) {
 	res := sampleResult(t)
 	res.Truncated = true

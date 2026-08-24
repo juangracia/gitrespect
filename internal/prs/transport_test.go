@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeTransport replays canned pages and records the queries it was asked for,
@@ -285,6 +287,157 @@ func TestHTTPTransportNeverLeaksTheToken(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatalf("error message leaked the token: %q", err)
+	}
+}
+
+// hostRoutingClient dials named hostnames onto local test servers, so a
+// redirect genuinely crosses a hostname boundary. Two httptest servers both on
+// 127.0.0.1 look like the same host and would prove nothing.
+func hostRoutingClient(routes map[string]string) *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, _, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				target, ok := routes[host]
+				if !ok {
+					return nil, fmt.Errorf("test dialed unexpected host %q", host)
+				}
+				var d net.Dialer
+				return d.DialContext(ctx, network, target)
+			},
+		},
+	}
+}
+
+func hostPort(serverURL string) string {
+	return strings.TrimPrefix(serverURL, "http://")
+}
+
+// Go strips Authorization across a cross-host redirect but knows nothing about
+// GitLab's PRIVATE-TOKEN, so without an explicit policy a redirecting API host
+// hands the token to whatever it points at. That is credential exfiltration,
+// not a cosmetic issue.
+func TestHTTPTransportDropsCredentialsOnCrossHostRedirect(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		token    string
+		header   string
+	}{
+		{ProviderGitLab, "glpat-SUPERSECRET", "PRIVATE-TOKEN"},
+		{ProviderGitHub, "ghp_SUPERSECRET", "Authorization"},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			var received http.Header
+			attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received = r.Header.Clone()
+				fmt.Fprint(w, `{"total_count":0,"items":[]}`)
+			}))
+			defer attacker.Close()
+
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "http://evil.example/stolen", http.StatusFound)
+			}))
+			defer origin.Close()
+
+			client := hostRoutingClient(map[string]string{
+				"origin.example": hostPort(origin.URL),
+				"evil.example":   hostPort(attacker.URL),
+			})
+			tr := &httpTransport{provider: tc.provider, base: "http://origin.example/api", token: tc.token, client: client}
+			if _, err := tr.Get(context.Background(), "groups/x/merge_requests", url.Values{}); err != nil {
+				t.Fatalf("Get failed: %v", err)
+			}
+
+			if got := received.Get(tc.header); got != "" {
+				t.Fatalf("%s leaked to another host across a redirect: %q", tc.header, got)
+			}
+			for _, h := range credentialHeaders {
+				if v := received.Get(h); strings.Contains(v, tc.token) {
+					t.Fatalf("token leaked in header %s: %q", h, v)
+				}
+			}
+		})
+	}
+}
+
+// The guard must not break ordinary redirects, or a self-hosted instance that
+// bounces http to https stops working.
+func TestHTTPTransportKeepsCredentialsOnSameHostRedirect(t *testing.T) {
+	var received http.Header
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/final") {
+			received = r.Header.Clone()
+			fmt.Fprint(w, "[]")
+			return
+		}
+		http.Redirect(w, r, srv.URL+"/final", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	tr := &httpTransport{provider: ProviderGitLab, base: srv.URL, token: "tok", client: httpClient(nil)}
+	if _, err := tr.Get(context.Background(), "x", url.Values{}); err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got := received.Get("PRIVATE-TOKEN"); got != "tok" {
+		t.Fatalf("PRIVATE-TOKEN = %q on a same-host redirect, want it preserved", got)
+	}
+}
+
+func TestSameHost(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"gitlab.com", "gitlab.com", true},
+		{"gitlab.com:443", "gitlab.com", true},
+		{"GitLab.com", "gitlab.com", true},
+		{"gitlab.com", "evil.com", false},
+		{"gitlab.com", "gitlab.com.evil.com", false},
+		{"gitlab.com", "sub.gitlab.com", false},
+	}
+	for _, tc := range cases {
+		if got := sameHost(tc.a, tc.b); got != tc.want {
+			t.Errorf("sameHost(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// A hostile or merely careless server can echo the credential back in its
+// error body, and that body goes straight into our error message.
+func TestAPIErrorRedactsATokenEchoedByTheServer(t *testing.T) {
+	const secret = "glpat-DO-NOT-LEAK-ME"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprintf(w, `{"message":"bad token %s"}`, r.Header.Get("PRIVATE-TOKEN"))
+	}))
+	defer srv.Close()
+
+	tr := &httpTransport{provider: ProviderGitLab, base: srv.URL, token: secret, client: srv.Client()}
+	_, err := tr.Get(context.Background(), "groups/x/merge_requests", url.Values{})
+	if err == nil {
+		t.Fatal("expected a 403 error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("a token echoed by the server reached the error text: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("error %q should show the redaction rather than dropping the detail silently", err)
+	}
+}
+
+func TestRedactSecret(t *testing.T) {
+	if got := redactSecret("token abc here", "abc"); got != "token [redacted] here" {
+		t.Errorf("redactSecret = %q, want the secret replaced", got)
+	}
+	// An empty secret must not turn every empty string match into a redaction.
+	if got := redactSecret("nothing to hide", ""); got != "nothing to hide" {
+		t.Errorf("redactSecret with no secret = %q, want the text unchanged", got)
 	}
 }
 

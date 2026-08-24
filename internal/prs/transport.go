@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -136,12 +138,73 @@ func cliBinary(provider string) string {
 	return "glab"
 }
 
+// credentialHeaders are the headers that must never survive a redirect to a
+// different host.
+var credentialHeaders = []string{"PRIVATE-TOKEN", "Authorization"}
+
+// maxRedirects matches net/http's own default.
+const maxRedirects = 10
+
 // httpTransport talks to the REST API directly with a token.
 type httpTransport struct {
 	provider string
 	base     string
 	token    string
 	client   Doer
+
+	guard   sync.Once
+	guarded Doer
+}
+
+// safeClient returns the client with a redirect policy that will not hand our
+// credentials to another host.
+//
+// Go strips Authorization on a cross-domain redirect but knows nothing about
+// GitLab's PRIVATE-TOKEN, so without this an API host that redirects (a
+// hijacked --api-url, a plain-http endpoint bounced by a machine in the
+// middle, a compromised instance) would hand the token straight to wherever it
+// pointed. The credential is this transport's, so the rule about where it may
+// travel belongs here rather than in whatever client was injected.
+func (t *httpTransport) safeClient() Doer {
+	t.guard.Do(func() {
+		t.guarded = withSafeRedirects(t.client)
+	})
+	return t.guarded
+}
+
+func withSafeRedirects(d Doer) Doer {
+	hc, ok := d.(*http.Client)
+	if !ok {
+		// A caller that injected something other than *http.Client controls
+		// its own redirect handling; there is nothing to clone.
+		return d
+	}
+	clone := *hc
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		if !sameHost(req.URL.Host, via[0].URL.Host) {
+			for _, h := range credentialHeaders {
+				req.Header.Del(h)
+			}
+		}
+		return nil
+	}
+	return &clone
+}
+
+// sameHost compares hostnames, ignoring port and case. A redirect that only
+// changes the port is still the same server; anything else is not.
+func sameHost(a, b string) bool {
+	return strings.EqualFold(hostOnly(a), hostOnly(b))
+}
+
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
 }
 
 func (t *httpTransport) Get(ctx context.Context, path string, query url.Values) (apiResponse, error) {
@@ -154,8 +217,8 @@ func (t *httpTransport) Get(ctx context.Context, path string, query url.Values) 
 		return apiResponse{}, fmt.Errorf("building request for %s: %w", path, err)
 	}
 	req.Header.Set("Accept", "application/json")
-	// The token is only ever written into a header, never into a log line, an
-	// error message or the rendered report.
+	// The token only ever exists in a header. It is kept out of error text by
+	// redactSecret, and off other hosts by safeClient's redirect policy.
 	if t.provider == ProviderGitHub {
 		req.Header.Set("Authorization", "Bearer "+t.token)
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -163,7 +226,7 @@ func (t *httpTransport) Get(ctx context.Context, path string, query url.Values) 
 		req.Header.Set("PRIVATE-TOKEN", t.token)
 	}
 
-	resp, err := t.client.Do(req)
+	resp, err := t.safeClient().Do(req)
 	if err != nil {
 		return apiResponse{}, fmt.Errorf("calling %s %s: %w", t.provider, path, err)
 	}
@@ -174,7 +237,7 @@ func (t *httpTransport) Get(ctx context.Context, path string, query url.Values) 
 		return apiResponse{}, fmt.Errorf("reading %s response for %s: %w", t.provider, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return apiResponse{}, newAPIError(t.provider, path, resp, body, false)
+		return apiResponse{}, newAPIError(t.provider, path, resp, body, false, t.token)
 	}
 	return apiResponse{Body: body, Page: nextPage(resp.Header)}, nil
 }
@@ -199,8 +262,13 @@ func (t *cliTransport) Get(ctx context.Context, path string, query url.Values) (
 		}
 		return apiResponse{}, err
 	}
-	// The CLI prints only the body, so pagination has to be inferred from a
-	// short page rather than from X-Next-Page.
+	// Leaving Page zeroed is deliberate, not an oversight: `glab api` and
+	// `gh api` print the response body and nothing else, so X-Next-Page and
+	// Link are simply not available on this path and paginate falls back to
+	// stopping on the first short page. Recovering the headers would mean
+	// parsing the raw HTTP dump from `-i`, which is fragile and cannot be
+	// tested without the real binaries installed. Do not "fix" this by
+	// pretending the headers exist.
 	return apiResponse{Body: out}, nil
 }
 
@@ -225,12 +293,12 @@ func cliAPIError(provider, path string, err error) *APIError {
 // newAPIError classifies a failed response. Separating a rate limit from a
 // genuine auth failure matters: one means wait, the other means fix your
 // credentials, and both arrive as a 403 on GitHub.
-func newAPIError(provider, path string, resp *http.Response, body []byte, viaCLI bool) *APIError {
+func newAPIError(provider, path string, resp *http.Response, body []byte, viaCLI bool, secret string) *APIError {
 	e := &APIError{
 		Provider:   provider,
 		Path:       path,
 		Status:     resp.StatusCode,
-		Message:    apiMessage(body),
+		Message:    redactSecret(apiMessage(body), secret),
 		RetryAfter: resp.Header.Get("Retry-After"),
 		ViaCLI:     viaCLI,
 	}
@@ -262,6 +330,20 @@ func isRateLimited(resp *http.Response, message string) bool {
 	return strings.Contains(lower, "rate limit") ||
 		strings.Contains(lower, "secondary rate") ||
 		strings.Contains(lower, "abuse detection")
+}
+
+// redactSecret strips a credential out of text that is about to reach a user,
+// a log, or a support ticket.
+//
+// A hostile server can echo the token straight back in its error body, and a
+// merely careless one can include it in a diagnostic. Either way that body
+// ends up inside our error message, so the redaction has to happen where the
+// message is built rather than being left to whoever prints it.
+func redactSecret(s, secret string) string {
+	if secret == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, secret, "[redacted]")
 }
 
 // apiMessage pulls the human readable part out of an error body without
