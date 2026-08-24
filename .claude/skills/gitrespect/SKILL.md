@@ -161,6 +161,7 @@ gitrespect -r ~/projects --per-repo --year=2025
 ## Gotchas
 
 - No author match → empty stats. Confirm the email matches the repo's commits (`git shortlog -sne`).
+- `-a/--author` resolves through a repo's `.mailmap` (git's `log.mailmap` defaults on), so an author's alternate addresses are merged automatically wherever a repo ships one. Usually desirable, but it means totals can differ per repo under `-r` depending on which repos carry a mailmap. Use `--roster`/`--alias` to apply the same identities everywhere.
 - **Baseline + `--year` (or any window covering all of a repo's history):** the baseline looks at history *before* the window start, so if the repo's first commit falls inside the analyzed window, the baseline is always "insufficient prior history." Widen the window backward, use a shorter analysis period with `-s/-u`, or fall back to `-b monthly` to show the within-period trend.
 - Shallow clones undercount history; fetch full history for accurate baselines/lead time.
 - `--metrics` and the personal baseline currently compute from the repo with the most of the author's commits when multiple repos are given.

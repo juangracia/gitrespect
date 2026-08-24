@@ -39,6 +39,11 @@ func init() {
 	compareCmd.Flags().StringVarP(&file, "file", "f", "", "Output file path")
 	compareCmd.Flags().StringVar(&theme, "theme", "dark", "HTML theme: dark or light")
 	compareCmd.Flags().StringSliceVarP(&exclude, "exclude", "e", nil, "Exclude files matching glob patterns")
+	compareCmd.Flags().StringVarP(&breakdown, "breakdown", "b", "", "Show breakdown per period: monthly, weekly, or daily")
+	compareCmd.Flags().BoolVar(&allAuthors, "all-authors", false, "Compare every author's commits, unfiltered")
+	compareCmd.Flags().StringVar(&rosterPath, "roster", "", "Roster file mapping a canonical name to that person's email addresses")
+	compareCmd.Flags().StringArrayVar(&aliasSpecs, "alias", nil, "Inline identity: 'Name=a@x.com,b@x.com' (repeatable)")
+	compareCmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Scan subdirectories for git repositories")
 
 	compareCmd.MarkFlagRequired("before")
 	compareCmd.MarkFlagRequired("after")
@@ -81,15 +86,32 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		paths = []string{cwd}
 	}
 
-	for i, p := range paths {
+	var resolved []string
+	for _, p := range paths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return fmt.Errorf("invalid path %s: %w", p, err)
 		}
-		paths[i] = abs
+		if recursive {
+			repos, err := git.FindRepos(abs)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to scan %s: %v\n", abs, err)
+				continue
+			}
+			resolved = append(resolved, repos...)
+			continue
+		}
+		resolved = append(resolved, abs)
+	}
+	paths = dedupeRepos(resolved)
+	if len(paths) == 0 {
+		return fmt.Errorf("no git repositories found")
 	}
 
-	if err := validateOutputFlags("", output, theme); err != nil {
+	if err := validateOutputFlags(breakdown, output, theme); err != nil {
+		return err
+	}
+	if err := checkSelectionConflicts(); err != nil {
 		return err
 	}
 	if err := git.ValidateExcludePatterns(exclude); err != nil {
@@ -106,12 +128,15 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --after: %w", err)
 	}
 
+	roster, err := buildRoster(rosterPath, aliasSpecs)
+	if err != nil {
+		return err
+	}
+
 	if len(team) > 0 {
-		if err := checkTeamConflicts(author); err != nil {
-			return err
-		}
-		beforeTeam, _ := buildTeamStats(paths, team, beforeStart, beforeEnd)
-		afterTeam, _ := buildTeamStats(paths, team, afterStart, afterEnd)
+		members := expandTeam(team, roster)
+		beforeTeam, _ := buildTeamStats(paths, members, beforeStart, beforeEnd)
+		afterTeam, _ := buildTeamStats(paths, members, afterStart, afterEnd)
 		if len(beforeTeam.Members) == 0 && len(afterTeam.Members) == 0 {
 			return fmt.Errorf("no team members could be analyzed")
 		}
@@ -131,7 +156,7 @@ func runCompare(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	authorEmail, err := resolveAuthor(author, paths[0])
+	identity, err := resolveIdentity(paths[0], roster)
 	if err != nil {
 		return err
 	}
@@ -140,14 +165,14 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	var beforeStats, afterStats []git.RepoStats
 
 	for _, path := range paths {
-		bStats, err := git.Analyze(path, authorEmail, beforeStart, beforeEnd, exclude)
+		bStats, err := git.AnalyzeIdentity(path, identity, beforeStart, beforeEnd, exclude)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to analyze %s: %v\n", path, err)
 			continue
 		}
 		beforeStats = append(beforeStats, bStats)
 
-		aStats, err := git.Analyze(path, authorEmail, afterStart, afterEnd, exclude)
+		aStats, err := git.AnalyzeIdentity(path, identity, afterStart, afterEnd, exclude)
 		if err != nil {
 			continue
 		}
@@ -174,6 +199,6 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	case "html":
 		return report.CompareHTML(comparison, file, theme)
 	default:
-		return report.CompareTerminal(comparison)
+		return report.CompareTerminalWithBreakdown(comparison, breakdown)
 	}
 }

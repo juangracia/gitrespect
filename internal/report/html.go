@@ -24,13 +24,16 @@ type HTMLData struct {
 	Monthly        []MonthlyHTMLData
 	HasMonthly     bool
 	BreakdownTitle string
-	Theme          string
-	IsDark         bool
-	Baseline       *BaselineHTMLData
-	CommitSize     *CommitSizeHTMLData
-	Cadence        *CadenceHTMLData
-	LeadTime       *LeadTimeHTMLData
-	Churn          *ChurnHTMLData
+	// Chart is the inline SVG trend chart, empty unless one was requested.
+	HasChart   bool
+	Chart      template.HTML
+	Theme      string
+	IsDark     bool
+	Baseline   *BaselineHTMLData
+	CommitSize *CommitSizeHTMLData
+	Cadence    *CadenceHTMLData
+	LeadTime   *LeadTimeHTMLData
+	Churn      *ChurnHTMLData
 }
 
 type BaselineHTMLData struct {
@@ -514,6 +517,9 @@ const htmlTemplate = `<!DOCTYPE html>
             <div class="daily-label">lines/day ({{.WorkingDays}} working days)</div>
         </div>
 
+        {{if .HasChart}}
+        <div class="section">{{.Chart}}</div>
+        {{end}}
 
         {{if .HasMonthly}}
         <div class="section">
@@ -753,7 +759,14 @@ const compareHtmlTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+// HTML renders the single-author report without a trend chart.
 func HTML(stats git.RepoStats, filename string, breakdown string, theme string, bundle metrics.Bundle) error {
+	return HTMLWithOptions(stats, filename, breakdown, theme, bundle, ChartOptions{})
+}
+
+// HTMLWithOptions renders the single-author report, adding the inline SVG
+// trend chart when chart.Enabled is set.
+func HTMLWithOptions(stats git.RepoStats, filename string, breakdown string, theme string, bundle metrics.Bundle, chart ChartOptions) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.Net) / float64(workingDays)
 
@@ -815,6 +828,18 @@ func HTML(stats git.RepoStats, filename string, breakdown string, theme string, 
 	data.Monthly = buildBreakdownHTML(stats, breakdown)
 	data.HasMonthly = len(data.Monthly) > 0
 	data.BreakdownTitle = breakdownHTMLTitle(breakdown)
+
+	if chart.Enabled {
+		label := stats.Author
+		if label == "" {
+			label = "Net lines"
+		}
+		data.Chart = RenderChart(
+			[]ChartSeries{MonthlySeries(stats, label)},
+			ChartRenderOptions{Title: "Net Lines by Month", IsDark: isDark},
+		)
+		data.HasChart = data.Chart != ""
+	}
 
 	tmpl, err := template.New("report").Parse(htmlTemplate)
 	if err != nil {
@@ -965,8 +990,11 @@ type TeamHTMLData struct {
 	Monthly          []MonthlyHTMLData
 	BreakdownTitle   string
 	HasMemberMetrics bool
-	Theme            string
-	IsDark           bool
+	// Chart is the inline SVG trend chart, empty unless one was requested.
+	HasChart bool
+	Chart    template.HTML
+	Theme    string
+	IsDark   bool
 }
 
 type TeamMemberHTMLData struct {
@@ -1136,6 +1164,10 @@ const teamHtmlTemplate = `<!DOCTYPE html>
         </div>
         {{end}}
 
+        {{if .HasChart}}
+        <div class="section">{{.Chart}}</div>
+        {{end}}
+
         {{if .HasMonthly}}
         <div class="section">
             <div class="section-title">{{.BreakdownTitle}}</div>
@@ -1155,7 +1187,15 @@ const teamHtmlTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+// TeamHTML renders the team report without a trend chart.
 func TeamHTML(stats git.TeamStats, filename string, theme string, breakdown string, bundles map[string]metrics.Bundle) error {
+	return TeamHTMLWithOptions(stats, filename, theme, breakdown, bundles, ChartOptions{})
+}
+
+// TeamHTMLWithOptions renders the team report, adding the inline SVG trend
+// chart when chart.Enabled is set. With chart.Highlight naming a member, the
+// chart becomes that member's line against a derived team average.
+func TeamHTMLWithOptions(stats git.TeamStats, filename string, theme string, breakdown string, bundles map[string]metrics.Bundle, chart ChartOptions) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 
 	isDark := theme != "light"
@@ -1227,6 +1267,19 @@ func TeamHTML(stats git.TeamStats, filename string, theme string, breakdown stri
 	data.Monthly = buildBreakdownHTML(git.RepoStats{Monthly: stats.Monthly, Daily: stats.Daily}, breakdown)
 	data.HasMonthly = len(data.Monthly) > 0
 	data.BreakdownTitle = "Team " + breakdownHTMLTitle(breakdown)
+
+	if chart.Enabled {
+		series := TeamSeries(stats, chart)
+		// Name the chart after what was actually built: a Highlight that
+		// matches nobody falls back to one line per member, and the title
+		// must not claim a comparison the chart does not show.
+		title := "Net Lines by Month"
+		if len(series) == 2 && series[1].Dashed {
+			title = fmt.Sprintf("Net Lines by Month: %s vs %s", series[0].Label, series[1].Label)
+		}
+		data.Chart = RenderChart(series, ChartRenderOptions{Title: title, IsDark: isDark})
+		data.HasChart = data.Chart != ""
+	}
 
 	tmpl, err := template.New("team").Parse(teamHtmlTemplate)
 	if err != nil {

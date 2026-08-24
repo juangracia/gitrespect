@@ -93,9 +93,42 @@ type TeamStats struct {
 }
 
 func Analyze(repoPath, author string, since, until time.Time, excludePatterns []string) (RepoStats, error) {
+	return analyzeWith(repoPath, author, AuthorArgs(author), since, until, excludePatterns)
+}
+
+// AnalyzeMulti analyses one person who commits under several addresses.
+//
+// Running Analyze once per address and adding the results is not equivalent
+// and must not be used as a substitute. git ORs repeated --author patterns, so
+// a commit matched by two of them is counted once here but twice there, and
+// overlapping patterns are the norm in exactly the case this exists for: a
+// name fragment and a full address naming the same person. One git log with
+// every pattern ORed counts each commit once.
+//
+// An empty or all-blank author list matches every commit in the repository,
+// the same way Analyze with an empty author does.
+func AnalyzeMulti(repoPath string, authors []string, since, until time.Time, excludePatterns []string) (RepoStats, error) {
+	return analyzeWith(repoPath, joinAuthors(authors), AuthorArgsMulti(authors), since, until, excludePatterns)
+}
+
+// joinAuthors builds the label a report prints for a merged identity.
+func joinAuthors(authors []string) string {
+	kept := make([]string, 0, len(authors))
+	for _, a := range authors {
+		if a = strings.TrimSpace(a); a != "" {
+			kept = append(kept, a)
+		}
+	}
+	return strings.Join(kept, ", ")
+}
+
+// analyzeWith is the shared body behind Analyze and AnalyzeMulti. The two
+// differ only in how the --author flags are built and how the result is
+// labelled, so the numstat parsing below has exactly one implementation.
+func analyzeWith(repoPath, label string, authorArgs []string, since, until time.Time, excludePatterns []string) (RepoStats, error) {
 	stats := RepoStats{
 		Path:    repoPath,
-		Author:  author,
+		Author:  label,
 		Since:   since,
 		Until:   until,
 		Monthly: make(map[string]MonthStats),
@@ -104,7 +137,7 @@ func Analyze(repoPath, author string, since, until time.Time, excludePatterns []
 
 	// Get commit stats with numstat
 	args := LogArgs(repoPath)
-	args = append(args, AuthorArgs(author)...)
+	args = append(args, authorArgs...)
 	args = append(args,
 		"--since="+TimeArg(since),
 		"--until="+TimeArg(until),
@@ -332,11 +365,49 @@ func AuthorArgs(author string) []string {
 	if author == "" {
 		return nil
 	}
-	pattern := author
-	if looksLikeEmail(author) {
-		pattern = "<" + author + ">"
+	return AuthorArgsMulti([]string{author})
+}
+
+// AuthorArgsMulti selects commits written by any one of several addresses.
+//
+// git ORs repeated --author flags, which is what lets one person's split
+// identities (personal vs corporate address, or a per-machine address left
+// over from an unconfigured git) be counted as a single contributor. The
+// matching rules are the same as AuthorArgs: complete addresses are anchored
+// on the angle brackets, comparison is literal and case-insensitive.
+//
+// Blank entries are dropped rather than passed through, because an empty
+// --author matches every commit in the repository and would silently turn one
+// person's report into the whole repo's.
+func AuthorArgsMulti(authors []string) []string {
+	patterns := make([]string, 0, len(authors))
+	seen := make(map[string]bool)
+	for _, a := range authors {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		pattern := a
+		if looksLikeEmail(a) {
+			pattern = "<" + a + ">"
+		}
+		// Repeating an identical --author would not change the result, but it
+		// makes the assembled command line harder to read when debugging.
+		if seen[pattern] {
+			continue
+		}
+		seen[pattern] = true
+		patterns = append(patterns, pattern)
 	}
-	return []string{"--fixed-strings", "--regexp-ignore-case", "--author=" + pattern}
+	if len(patterns) == 0 {
+		return nil
+	}
+
+	args := []string{"--fixed-strings", "--regexp-ignore-case"}
+	for _, p := range patterns {
+		args = append(args, "--author="+p)
+	}
+	return args
 }
 
 // looksLikeEmail reports whether s is a complete address rather than a name

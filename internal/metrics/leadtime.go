@@ -30,18 +30,123 @@ type LeadTime struct {
 	// Method records how lead time was derived, since the two approaches are
 	// not directly comparable.
 	Method string `json:"method,omitempty"`
+	// ReposCovered is how many repositories were examined for lead time.
+	// Repositories with no main-like branch are not counted, since there was
+	// nothing in them to measure.
+	ReposCovered int `json:"repos_covered,omitempty"`
 }
 
 // ComputeLeadTime calculates the median lead time (in days) for merge commits
 // authored by the given author on the main branch within the specified window.
 func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime, error) {
-	main := detectMainBranch(repoPath)
-	if main == "" {
-		return LeadTime{MainBranch: ""}, nil
+	return ComputeLeadTimeAcross([]string{repoPath}, []string{author}, since, until)
+}
+
+// ComputeLeadTimeAcross calculates one median lead time over every repository
+// in paths, for an author reachable under any of the given addresses.
+//
+// Pooling here cannot be a plain concatenation, because lead time is measured
+// two ways and the two are not comparable: a merge-commit sample is how long a
+// branch lived, while an authored-to-landed sample is how long a patch waited
+// between being written and reaching main. Mixing them would produce a median
+// of two different quantities.
+//
+// So the method is chosen once, for the whole run, and only samples of that one
+// method are pooled. Every repository is asked for merge-commit samples first;
+// if any repository anywhere yields one, the merge-commit median is taken over
+// all of them and repositories without merges simply contribute nothing. Only
+// when no repository has a single merge commit does the run fall back to
+// authored-to-landed, pooled the same way. That mirrors what the single
+// repository path has always done, one level up.
+//
+// The minimum sample guard applies to the pooled set rather than per
+// repository, because the pooled median is the number being reported and the
+// guard is about how much evidence stands behind it.
+//
+// A repository git cannot read is skipped rather than aborting the run. If none
+// could be read the result is an error, not a confident zero. A repository with
+// no main-like branch is not a failure: it was read, it simply has nothing to
+// measure, and it is left out of ReposCovered.
+func ComputeLeadTimeAcross(paths []string, authors []string, since, until time.Time) (LeadTime, error) {
+	type target struct{ path, branch string }
+
+	var (
+		targets  []target
+		scanned  int
+		firstErr error
+	)
+	for _, path := range dedupePaths(paths) {
+		branch := detectMainBranch(path)
+		if branch == "" {
+			if isReadableRepo(path) {
+				scanned++
+			} else if firstErr == nil {
+				firstErr = fmt.Errorf("not a git repository: %s", path)
+			}
+			continue
+		}
+		targets = append(targets, target{path, branch})
 	}
 
-	args := []string{"-C", repoPath, "log", main, "--merges", "--first-parent"}
-	args = append(args, git.AuthorArgs(author)...)
+	var (
+		mergeDays []float64
+		branches  []string
+		measured  []target
+	)
+	for _, t := range targets {
+		days, err := mergeLeadTimes(t.path, t.branch, authors, since, until)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		scanned++
+		measured = append(measured, t)
+		branches = append(branches, t.branch)
+		mergeDays = append(mergeDays, days...)
+	}
+	if scanned == 0 {
+		return LeadTime{}, coverageErr(firstErr)
+	}
+
+	lt := LeadTime{
+		MainBranch:   joinBranches(branches),
+		ReposCovered: len(measured),
+	}
+	if len(mergeDays) > 0 {
+		lt.MedianDays = median(mergeDays)
+		lt.Samples = len(mergeDays)
+		lt.Method = LeadTimeMerge
+		return lt, nil
+	}
+
+	// No merge commits anywhere in range. Fall back to author-to-landed, which
+	// still works for rebase and patch-based workflows.
+	var authoredDays []float64
+	for _, t := range measured {
+		// A failure here is not fatal: the repo was read well enough to answer
+		// the merge question, and the run still has the other repos' samples.
+		days, err := authoredLeadTimes(t.path, t.branch, authors, since, until)
+		if err != nil {
+			continue
+		}
+		authoredDays = append(authoredDays, days...)
+	}
+	if len(authoredDays) < minAuthoredSamples {
+		return lt, nil
+	}
+	lt.MedianDays = median(authoredDays)
+	lt.Samples = len(authoredDays)
+	lt.Method = LeadTimeAuthored
+	return lt, nil
+}
+
+// mergeLeadTimes returns one sample per merge commit on branch: the days
+// between the oldest commit unique to the merged branch and the merge itself.
+func mergeLeadTimes(repoPath, branch string, authors []string, since, until time.Time) ([]float64, error) {
+	args := []string{"-C", repoPath, "log", branch, "--merges", "--first-parent"}
+	args = append(args, git.AuthorArgsMulti(authors)...)
 	args = append(args,
 		"--since="+git.TimeArg(since),
 		"--until="+git.TimeArg(until),
@@ -49,7 +154,7 @@ func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime,
 	)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
-		return LeadTime{}, fmt.Errorf("git log: %w", err)
+		return nil, fmt.Errorf("git log: %w", err)
 	}
 
 	var days []float64
@@ -98,19 +203,7 @@ func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime,
 		}
 		days = append(days, leadDays)
 	}
-
-	if len(days) > 0 {
-		return LeadTime{
-			MedianDays: median(days),
-			Samples:    len(days),
-			MainBranch: main,
-			Method:     LeadTimeMerge,
-		}, nil
-	}
-
-	// No merge commits in range. Fall back to author-to-landed, which still
-	// works for rebase and patch-based workflows.
-	return authoredLeadTime(repoPath, author, main, since, until)
+	return days, nil
 }
 
 // minAuthoredSamples is the number of rewritten commits required before an
@@ -118,20 +211,21 @@ func ComputeLeadTime(repoPath, author string, since, until time.Time) (LeadTime,
 // would otherwise become the entire sample.
 const minAuthoredSamples = 3
 
-// authoredLeadTime derives lead time from the gap between when a commit was
+// authoredLeadTimes derives lead time from the gap between when a commit was
 // authored and when it landed on main. Only commits whose committer date is
 // later than their author date carry a signal; a commit made directly on main
 // has identical dates.
 //
 // That discriminator detects a rewritten committer date, which a rebase or
 // patch workflow produces but so do cherry-picks, amends and whole-history
-// rewrites such as filter-repo. Two guards keep those from being reported as
-// lead time: samples longer than the analysis window are discarded, since work
-// that took longer than the period asked about did not flow through it, and a
-// median is only reported once several samples agree.
-func authoredLeadTime(repoPath, author, main string, since, until time.Time) (LeadTime, error) {
-	args := []string{"-C", repoPath, "log", main, "--no-merges"}
-	args = append(args, git.AuthorArgs(author)...)
+// rewrites such as filter-repo. The guard applied here keeps the worst of those
+// out: samples longer than the analysis window are discarded, since work that
+// took longer than the period asked about did not flow through it. The other
+// guard, requiring several samples before a median is reported, belongs to the
+// caller because it applies to the pooled set.
+func authoredLeadTimes(repoPath, branch string, authors []string, since, until time.Time) ([]float64, error) {
+	args := []string{"-C", repoPath, "log", branch, "--no-merges"}
+	args = append(args, git.AuthorArgsMulti(authors)...)
 	args = append(args,
 		"--since="+git.TimeArg(since),
 		"--until="+git.TimeArg(until),
@@ -139,7 +233,7 @@ func authoredLeadTime(repoPath, author, main string, since, until time.Time) (Le
 	)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
-		return LeadTime{MainBranch: main}, fmt.Errorf("git log: %w", err)
+		return nil, fmt.Errorf("git log: %w", err)
 	}
 
 	windowDays := until.Sub(since).Hours() / 24
@@ -163,14 +257,5 @@ func authoredLeadTime(repoPath, author, main string, since, until time.Time) (Le
 		}
 		days = append(days, delta)
 	}
-
-	if len(days) < minAuthoredSamples {
-		return LeadTime{MainBranch: main}, nil
-	}
-	return LeadTime{
-		MedianDays: median(days),
-		Samples:    len(days),
-		MainBranch: main,
-		Method:     LeadTimeAuthored,
-	}, nil
+	return days, nil
 }

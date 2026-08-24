@@ -392,6 +392,16 @@ Author matching is case-insensitive, and a full address is matched exactly, so
 like `-a alice` still matches loosely. `--author` and `--team` are mutually
 exclusive.
 
+Author matching also resolves through `.mailmap`, because git's `log.mailmap`
+setting defaults to on and gitrespect inherits it. If a repository carries a
+`.mailmap` unifying `alice@personal.example` into `alice@corp.com`, then
+`-a alice@corp.com` returns the commits made under both addresses. That is
+almost always what you want. The catch is that the result then depends on each
+repository's `.mailmap`, so with `-r` across many repos the same person can be
+counted differently per repo depending on which of them happens to carry an
+entry. Use `--roster` or `--alias` when you need the same identities applied
+uniformly across every repository regardless of what each one ships.
+
 `--exclude` patterns are matched against renamed files on both their old and
 their new path, so `-e 'vendor/*'` still excludes a file that was moved into or
 out of `vendor/`. A directory pattern excludes the whole subtree, `**` is

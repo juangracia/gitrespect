@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/juangracia/gitrespect/internal/benchmark"
@@ -486,11 +487,23 @@ func formatNumber(n int) string {
 	return formatNumberAbs(n)
 }
 
+// formatNumberAbs groups n in thousands. It separates every group, not just
+// the last one: a year of team output is seven figures, and "1234,567" reads
+// as a typo.
 func formatNumberAbs(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
+	if n < 0 {
+		n = -n
 	}
-	return fmt.Sprintf("%d,%03d", n/1000, n%1000)
+	digits := strconv.Itoa(n)
+
+	var b strings.Builder
+	for i := 0; i < len(digits); i++ {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(digits[i])
+	}
+	return b.String()
 }
 
 func getMonthName(m int) string {

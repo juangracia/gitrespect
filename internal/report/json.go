@@ -208,10 +208,11 @@ func JSON(stats git.RepoStats, filename string, breakdown string, bundle metrics
 }
 
 type TeamJSONReport struct {
-	Period  PeriodInfo         `json:"period"`
-	Totals  TeamTotals         `json:"totals"`
-	Members []MemberStats      `json:"members"`
-	Monthly []MonthlyJSONStats `json:"monthly,omitempty"`
+	Period       PeriodInfo         `json:"period"`
+	Totals       TeamTotals         `json:"totals"`
+	Members      []MemberStats      `json:"members"`
+	Repositories []RepoRollupJSON   `json:"repositories,omitempty"`
+	Monthly      []MonthlyJSONStats `json:"monthly,omitempty"`
 }
 
 type TeamTotals struct {
@@ -232,7 +233,15 @@ type MemberStats struct {
 	Metrics *MetricsPayload `json:"metrics,omitempty"`
 }
 
+// TeamJSON writes a team report without per-repository detail. See
+// TeamJSONWithRepos, which it delegates to, for the --per-repo form.
 func TeamJSON(stats git.TeamStats, filename string, breakdown string, bundles map[string]metrics.Bundle) error {
+	return TeamJSONWithRepos(stats, filename, breakdown, bundles, nil)
+}
+
+// TeamJSONWithRepos writes a team report, optionally including a per-repository
+// rollup. Passing nil rollups produces exactly the output TeamJSON always did.
+func TeamJSONWithRepos(stats git.TeamStats, filename string, breakdown string, bundles map[string]metrics.Bundle, rollups []git.RepoRollup) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 
 	report := TeamJSONReport{
@@ -284,6 +293,8 @@ func TeamJSON(stats git.TeamStats, filename string, breakdown string, bundles ma
 		}
 		report.Members = append(report.Members, ms)
 	}
+
+	report.Repositories = buildRepoRollupJSON(rollups, workingDays)
 
 	// Team-wide monthly breakdown
 	if breakdown == "monthly" && len(stats.Monthly) > 0 {
