@@ -45,7 +45,16 @@ Map what the user wants to the right flags. Common intents:
 | A weekly or daily trend | `gitrespect --year=2025 -b weekly` |
 | Several repos at once | `gitrespect ./api ./web ./gateway` |
 | Every repo under a folder | `gitrespect -r ~/projects` |
-| Per-repo breakdown | `gitrespect -r ~/projects --per-repo` |
+| Per-repo breakdown (works in team mode too) | `gitrespect -r ~/projects --per-repo` |
+| "Who is even on this team?" | `gitrespect -r ~/projects --top 10 --year=2025` |
+| One person with several email addresses | `gitrespect --alias "Alice=a@corp.com,a@personal.com" -a Alice --year=2025` |
+| A standing team roster | `gitrespect -r ~/projects --roster team.yaml --top 10 --year=2025` |
+| Everyone's commits, unfiltered | `gitrespect -r ~/projects --all-authors --year=2025` |
+| A trend chart in HTML | `gitrespect --year=2025 -b monthly -o html --chart -f report.html` |
+| One member vs the team average | `gitrespect -t a@x.com,b@x.com --year=2025 -b monthly -o html --chart --highlight a@x.com -f t.html` |
+| When inside each period it changed | `gitrespect compare --before=2025-01:2025-06 --after=2025-07:2025-12 -b monthly` |
+| MR/PR volume per person | `gitrespect prs --provider gitlab --group my-group/web --year=2025 -b monthly` |
+| MR volume before/after | `gitrespect compare --data=prs --group my-group/web --before=2025-01:2025-06 --after=2025-07:2025-12` |
 | Exclude noise (vendored/generated) | `gitrespect -e 'vendor/*' -e '*.pb.go'` |
 | An HTML report to share | `gitrespect --year=2025 -b monthly -o html -f report.html` |
 | Machine-readable output | `gitrespect -o json -f stats.json` |
@@ -98,8 +107,15 @@ gitrespect compare --before=2025-01:2025-06 --after=2025-07:2025-12
 
 Periods are `YYYY-MM:YYYY-MM` (a full `YYYY-MM-DD` also works). Output reports
 net lines/day for each period and the multiplier between them. `compare` takes
-`[paths...]`, `-a/--author`, `-t/--team`, `-e/--exclude`, `-o/--output`,
+`[paths...]`, `-a/--author`, `-t/--team`, `--all-authors`, `-r/--recursive`,
+`-e/--exclude`, `-b/--breakdown`, `--roster`/`--alias`, `--data`, `-o/--output`,
 `-f/--file`, and `--theme`.
+
+`-b/--breakdown` shows each period's shape. The two periods are broken down
+**separately**, since they can differ in length and need not be adjacent.
+
+`--data=prs` compares merge request volume instead of lines, giving the same Nx
+multiplier (add `--group` for GitLab or `--org` for GitHub).
 
 For a whole team, pass `-t` and get the team total plus a per-member table:
 
@@ -164,8 +180,15 @@ gitrespect -r ~/projects --per-repo --year=2025
 - `-a/--author` resolves through a repo's `.mailmap` (git's `log.mailmap` defaults on), so an author's alternate addresses are merged automatically wherever a repo ships one. Usually desirable, but it means totals can differ per repo under `-r` depending on which repos carry a mailmap. Use `--roster`/`--alias` to apply the same identities everywhere.
 - **Baseline + `--year` (or any window covering all of a repo's history):** the baseline looks at history *before* the window start, so if the repo's first commit falls inside the analyzed window, the baseline is always "insufficient prior history." Widen the window backward, use a shorter analysis period with `-s/-u`, or fall back to `-b monthly` to show the within-period trend.
 - Shallow clones undercount history; fetch full history for accurate baselines/lead time.
-- `--metrics` and the personal baseline currently compute from the repo with the most of the author's commits when multiple repos are given.
+- `--metrics` and the personal baseline pool their samples across every repo analyzed. Medians pool the underlying samples rather than averaging per-repo medians, so the numbers describe the same work the totals do.
 - Team mode (`-t`) honors `--metrics` (computed per member) and `--breakdown` at any granularity (team-wide). The personal baseline is single-author only and is not shown in team reports.
+- `-a`, `-t`, `--all-authors` and `--top` are mutually exclusive: each selects who to count, so passing two is an error, not a silent winner.
+- `--top` filters bot/CI identities by regex against both address and display name. Excluded identities are listed on stderr; if a real person is caught by it, name them with `-t`, which skips discovery. Add patterns with `--exclude-authors`.
+- `-r` skips repos that share an `origin` remote with one already counted, warning on stderr. Repos with no readable remote are always kept.
+- A roster (`--roster` / `--alias`) applies the same identities to every repo, unlike `.mailmap` which is per-repo. Listing one address under two people is rejected.
+- `--chart` needs `-b/--breakdown` and `-o html`; it warns and no-ops otherwise. `--highlight` needs a team.
+- `prs` needs network access and either a token (`GITLAB_TOKEN`/`GITHUB_TOKEN`) or an authenticated `glab`/`gh`. Prefer the env var: `--token` is visible to anyone who can run `ps`.
+- `prs` lead time uses real MR open→merge timestamps, which is a cleaner signal than the commit-graph heuristic behind `--metrics=lead-time`.
 - `--breakdown` accepts `monthly`, `weekly` and `daily`; weeks are anchored on Monday.
 - `--until` is inclusive of the unit named: `--until=2025-03-05` covers all of 5 March.
 - Lead time needs merge commits, or a rebase/patch workflow that preserves author dates. Squash-merge repos rewrite both timestamps and report no signal; that is a git-history limitation, not a failure. Don't present it as zero.
