@@ -204,15 +204,24 @@ func TestTopContributorsCollapsesMailmapAliases(t *testing.T) {
 		t.Fatalf("write mailmap: %v", err)
 	}
 
-	got, err := TopContributors([]string{r}, stamp(2024, 1, 1), stamp(2026, 1, 1), 1, nil)
+	// Scanned unfiltered rather than top-1: truncating to one row hides the
+	// split, and the failure then surfaces as some unrelated address winning
+	// the tie, which says nothing about the actual cause.
+	got, err := TopContributors([]string{r}, stamp(2024, 1, 1), stamp(2026, 1, 1), 0, nil)
 	if err != nil {
 		t.Fatalf("TopContributors: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("TopContributors = %+v, want one contributor", got)
+	counts := commitsByEmail(got)
+
+	const alias = "wesleyornellas@MacBook---Wesley.local"
+	if counts["wesley@corp.com"] != 2 {
+		t.Errorf("wesley@corp.com has %d commits, want 2: mailmap aliases are not collapsing, "+
+			"which is what happens if the pretty format uses %%ae/%%an instead of the mailmap-mapped %%aE/%%aN",
+			counts["wesley@corp.com"])
 	}
-	if got[0].Email != "wesley@corp.com" || got[0].Commits != 2 {
-		t.Errorf("got %+v, want wesley@corp.com with 2 commits", got[0])
+	if n, split := counts[alias]; split {
+		t.Errorf("%s is still a separate contributor with %d commits; it should have folded into "+
+			"wesley@corp.com via .mailmap, so the format specifier has lost its uppercase", alias, n)
 	}
 }
 

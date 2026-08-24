@@ -93,10 +93,18 @@ func ScanContributors(paths []string, since, until time.Time) ([]Contributor, er
 
 	for _, p := range paths {
 		args := LogArgs(p)
+		// --use-mailmap does not affect the fields below and is kept only so
+		// the intent is legible on the command line. What actually collapses
+		// aliases is the CASE of the format specifier: %aE and %aN are
+		// mailmap-mapped, %ae and %an are not, and no flag changes that.
+		//
+		// Measured on git 2.50.1 against a repo with a .mailmap: %aE returned
+		// a single identity with --use-mailmap, without it, and with
+		// log.mailmap forced off; %ae returned both aliases in every one of
+		// those combinations, --use-mailmap included. So lowercasing these
+		// would silently split every person who has a mailmap entry, and
+		// adding or removing the flag would not save it.
 		args = append(args, "--use-mailmap")
-		// %aE and %aN are the mailmap-mapped author fields. The lower-case
-		// %ae and %an are not mapped, so a repo carrying a .mailmap would
-		// still report each alias as its own contributor if they were used.
 		args = append(args, "--pretty=format:%aE|%aN")
 		if !since.IsZero() {
 			args = append(args, "--since="+TimeArg(since))
