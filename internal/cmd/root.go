@@ -415,6 +415,11 @@ func buildTeamStats(paths []string, members []git.Identity, since, until time.Ti
 		for _, path := range paths {
 			stats, err := git.AnalyzeIdentity(path, member, since, until, exclude)
 			if err != nil {
+				// Solo mode warns here, and team mode staying silent meant a
+				// requested path could drop out of a several-hundred-repo scan
+				// leaving a confident total with nothing to notice.
+				fmt.Fprintf(os.Stderr, "Warning: failed to analyze %s for %s: %v\n",
+					path, member.Label(), err)
 				continue
 			}
 			memberStats = append(memberStats, stats)
@@ -424,7 +429,7 @@ func buildTeamStats(paths []string, members []git.Identity, since, until time.Ti
 			continue
 		}
 
-		label := member.Label()
+		label := uniqueLabel(member.Label(), teamStats.Members)
 		combined := git.CombineStats(memberStats)
 		combined.Author = label
 		teamStats.Members[label] = combined
@@ -521,6 +526,26 @@ func resolveHighlight(token string, members []git.Identity) string {
 		}
 	}
 	return token
+}
+
+// uniqueLabel returns a key not already present in members.
+//
+// Team stats are keyed by display label, so two members arriving under the same
+// one would silently overwrite each other's row while the running totals kept
+// counting both. The result is a report whose member rows do not sum to its own
+// total, which is worse than an ugly label because it discredits every number
+// on the page. Callers should hand over distinct labels; this is the backstop
+// that keeps the invariant true when they do not.
+func uniqueLabel(label string, members map[string]git.RepoStats) string {
+	if _, taken := members[label]; !taken {
+		return label
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s (%d)", label, i)
+		if _, taken := members[candidate]; !taken {
+			return candidate
+		}
+	}
 }
 
 // analysedPaths lists the repositories that actually produced stats, so opt-in

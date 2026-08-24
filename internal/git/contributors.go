@@ -2,6 +2,7 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -119,6 +120,10 @@ func ScanContributors(paths []string, since, until time.Time) ([]Contributor, er
 		if err != nil {
 			failures++
 			lastErr = fmt.Errorf("git log failed in %s: %w", p, err)
+			// A skipped repository silently shrinks the discovered team, and
+			// on a scan of several hundred repos nobody would notice from the
+			// numbers alone.
+			fmt.Fprintf(os.Stderr, "Warning: skipping %s during contributor discovery: %v\n", p, err)
 			continue
 		}
 

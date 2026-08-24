@@ -205,7 +205,31 @@ func discoverTeam(paths []string, since, until time.Time, n int, extraExclude []
 	if len(identities) == 0 {
 		return nil, fmt.Errorf("--top %d found no contributors in the scanned repositories for this period", n)
 	}
-	return identities, nil
+	return disambiguateLabels(identities), nil
+}
+
+// disambiguateLabels guarantees every identity prints under a distinct label.
+//
+// Display names are not unique. Two people genuinely called the same thing, or
+// far more commonly one person whose roster entry covers only some of their
+// addresses, both arrive here labelled identically. Team stats are keyed by
+// label, so a collision silently overwrites one row while the totals keep
+// counting both, leaving a report whose member rows do not add up to its own
+// total. Appending the address is ugly and correct; a wrong number is neither.
+func disambiguateLabels(identities []git.Identity) []git.Identity {
+	counts := make(map[string]int, len(identities))
+	for _, id := range identities {
+		counts[strings.ToLower(id.Label())]++
+	}
+
+	out := make([]git.Identity, 0, len(identities))
+	for _, id := range identities {
+		if counts[strings.ToLower(id.Label())] > 1 && id.Name != "" && len(id.Emails) > 0 {
+			id.Name = fmt.Sprintf("%s <%s>", id.Name, id.Emails[0])
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 // maxListedAutomation caps how many excluded addresses are named, so a repo

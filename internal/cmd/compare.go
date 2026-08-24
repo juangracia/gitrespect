@@ -250,6 +250,12 @@ func runCompare(cmd *cobra.Command, args []string) error {
 
 		aStats, err := git.AnalyzeIdentity(path, identity, afterStart, afterEnd, exclude)
 		if err != nil {
+			// Dropping a repo from only one side compares unequal repo sets and
+			// reports the difference as a productivity change, so this cannot
+			// stay silent the way it used to be.
+			fmt.Fprintf(os.Stderr,
+				"Warning: %s analyzed for the before period but not the after period (%v); "+
+					"the multiplier below compares unequal repository sets\n", path, err)
 			continue
 		}
 		afterStats = append(afterStats, aStats)
