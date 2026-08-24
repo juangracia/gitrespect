@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,16 +35,18 @@ func TestNormalizeRemoteCollapsesEquivalentURLs(t *testing.T) {
 	}
 }
 
-// Host names are case-insensitive but repository paths are not: folding the
-// path would merge two genuinely different GitLab projects into one.
-func TestNormalizeRemotePreservesPathCase(t *testing.T) {
-	got := NormalizeRemote("https://GitHub.com/Acme/WidgetService.git")
-	want := "github.com/Acme/WidgetService"
+// The host is always folded, because host names are case-insensitive
+// everywhere. Whether the PATH folds depends on the forge and is covered by
+// TestNormalizeRemoteFoldsPathCaseOnlyWhereTheForgeDoes; gitlab.com is used
+// here because its paths are case-sensitive, so any folding shows up.
+func TestNormalizeRemoteFoldsHostButNotGitLabPaths(t *testing.T) {
+	got := NormalizeRemote("https://GitLab.com/Acme/WidgetService.git")
+	want := "gitlab.com/Acme/WidgetService"
 	if got != want {
 		t.Errorf("NormalizeRemote() = %q, want %q", got, want)
 	}
-	if NormalizeRemote("https://github.com/acme/widget") == NormalizeRemote("https://github.com/Acme/Widget") {
-		t.Error("paths differing only in case collapsed, want distinct identities")
+	if NormalizeRemote("https://gitlab.com/acme/widget") == NormalizeRemote("https://gitlab.com/Acme/Widget") {
+		t.Error("gitlab.com paths differing only in case collapsed, want distinct identities")
 	}
 }
 
@@ -56,6 +59,90 @@ func TestNormalizeRemoteDistinguishesDifferentProjects(t *testing.T) {
 	for _, tc := range tests {
 		if NormalizeRemote(tc[0]) == NormalizeRemote(tc[1]) {
 			t.Errorf("NormalizeRemote collapsed %q and %q", tc[0], tc[1])
+		}
+	}
+}
+
+// Two self-hosted instances on one host differ only by port. Stripping an
+// arbitrary port merges them and erases one project's work from the total, so
+// only a protocol's own default port may be dropped.
+func TestNormalizeRemoteKeepsNonDefaultPorts(t *testing.T) {
+	a := NormalizeRemote("https://gitea.example.com:8080/acme/widget.git")
+	b := NormalizeRemote("https://gitea.example.com:9090/acme/widget.git")
+	if a == b {
+		t.Errorf("two instances on different ports collapsed to %q", a)
+	}
+	if !strings.Contains(a, "8080") {
+		t.Errorf("NormalizeRemote = %q, want the non-default port retained", a)
+	}
+}
+
+// A default port and a bare host do name the same server, so those still
+// collapse or the common ssh:// form stops matching its scp-like twin.
+func TestNormalizeRemoteStripsDefaultPortsOnly(t *testing.T) {
+	tests := []struct {
+		withPort string
+		bare     string
+	}{
+		{"ssh://git@gitlab.com:22/g/p.git", "ssh://git@gitlab.com/g/p.git"},
+		{"https://gitlab.com:443/g/p.git", "https://gitlab.com/g/p.git"},
+		{"http://gitlab.com:80/g/p.git", "http://gitlab.com/g/p.git"},
+	}
+	for _, tc := range tests {
+		if got, want := NormalizeRemote(tc.withPort), NormalizeRemote(tc.bare); got != want {
+			t.Errorf("NormalizeRemote(%q) = %q, want %q", tc.withPort, got, want)
+		}
+	}
+}
+
+// In an scp-like address the authority ends at the ":", not at the first "/".
+// Using the slash lets an "@" inside the path swallow the host, so two
+// different forges collapse into one identity.
+func TestNormalizeRemoteScpPathWithAtKeepsHost(t *testing.T) {
+	gitlab := NormalizeRemote("git@gitlab.com:my@group/proj.git")
+	github := NormalizeRemote("git@github.com:my@group/proj.git")
+
+	if gitlab == github {
+		t.Fatalf("two different hosts collapsed to %q", gitlab)
+	}
+	if !strings.HasPrefix(gitlab, "gitlab.com/") {
+		t.Errorf("NormalizeRemote = %q, want the gitlab.com host preserved", gitlab)
+	}
+	if !strings.HasPrefix(github, "github.com/") {
+		t.Errorf("NormalizeRemote = %q, want the github.com host preserved", github)
+	}
+}
+
+// GitHub repository paths are case-insensitive and GitLab's are not, so the
+// two forges have to be treated differently or one of them gets a wrong answer.
+func TestNormalizeRemoteFoldsPathCaseOnlyWhereTheForgeDoes(t *testing.T) {
+	if NormalizeRemote("https://github.com/Foo/Bar.git") != NormalizeRemote("https://github.com/foo/bar.git") {
+		t.Error("github.com paths differing only in case stayed distinct, but GitHub treats them as one repo")
+	}
+	if NormalizeRemote("https://gitlab.com/Foo/Bar.git") == NormalizeRemote("https://gitlab.com/foo/bar.git") {
+		t.Error("gitlab.com paths differing only in case collapsed, but GitLab treats them as different projects")
+	}
+	// An unknown host is treated as case-sensitive: guessing the other way
+	// would merge two real projects, which is the unrecoverable error.
+	if NormalizeRemote("https://git.acme.internal/Foo/Bar") == NormalizeRemote("https://git.acme.internal/foo/bar") {
+		t.Error("unknown host folded path case, want case-sensitive by default")
+	}
+}
+
+// Garbage has to mean "no identity, never merge". A plausible-looking string
+// makes two unrelated broken remotes collapse into one.
+func TestNormalizeRemoteRejectsMalformedInput(t *testing.T) {
+	for _, in := range []string{
+		"://broken",
+		"://",
+		"https://",
+		"   ",
+		// Names a server but no project.
+		"https://gitlab.com",
+		"https://gitlab.com/",
+	} {
+		if got := NormalizeRemote(in); got != "" {
+			t.Errorf("NormalizeRemote(%q) = %q, want \"\" so it is never merged", in, got)
 		}
 	}
 }
@@ -198,6 +285,46 @@ func TestDedupeByRemoteCollapsesRepeatedPaths(t *testing.T) {
 	}
 	if len(dups) != 0 {
 		t.Errorf("dups = %v, want none for an identical path", dups)
+	}
+}
+
+// A repo with no origin used to be identified by its path string alone, so the
+// same repo reached through a symlink (or a differently-cased spelling on a
+// case-insensitive filesystem) was counted twice. That is the same silent
+// double count the remote check exists to prevent, reached by another route.
+func TestDedupeByRemoteCollapsesSameRepoReachedByTwoPaths(t *testing.T) {
+	parent := t.TempDir()
+	real := newRemoteRepo(t, parent, "real", "", stamp(2025, 1, 1))
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	kept, _ := DedupeByRemote([]string{real, link})
+
+	if len(kept) != 1 {
+		t.Fatalf("kept %v, want one path: a symlink to a repo is the same repo, not a second checkout", kept)
+	}
+	if kept[0] != real {
+		t.Errorf("kept %q, want the real path %q", kept[0], real)
+	}
+}
+
+// The counterpart guard: identifying remote-less repos must not merge repos
+// that merely both lack an origin. A wrong collapse deletes a real project's
+// work from the total, which is worse than the double count it prevents.
+func TestDedupeByRemoteKeepsDistinctRemotelessRepos(t *testing.T) {
+	parent := t.TempDir()
+	a := newRemoteRepo(t, parent, "alpha", "", stamp(2025, 1, 1))
+	b := newRemoteRepo(t, parent, "beta", "", stamp(2025, 1, 2))
+
+	kept, dups := DedupeByRemote([]string{a, b})
+
+	if !reflect.DeepEqual(kept, []string{a, b}) {
+		t.Errorf("kept = %v, want both distinct repos", kept)
+	}
+	if len(dups) != 0 {
+		t.Errorf("dups = %v, want none", dups)
 	}
 }
 
