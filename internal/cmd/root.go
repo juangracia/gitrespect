@@ -571,7 +571,7 @@ func analysedPaths(stats []git.RepoStats, fallback string) []string {
 // aborting the whole report, since a missing lead time is no reason to withhold
 // a commit-size distribution.
 func computeOptInMetrics(paths []string, authors []string, since, until time.Time, sel metrics.Selection, cWindow time.Duration, exclude []string) metrics.Bundle {
-	bundle := metrics.Bundle{Selection: sel}
+	bundle := metrics.Bundle{Selection: sel, ReposAnalyzed: len(paths)}
 	if sel.CommitSize {
 		if d, err := metrics.ComputeCommitSizeAcross(paths, authors, since, until, exclude); err == nil {
 			bundle.CommitSize = &d

@@ -50,10 +50,11 @@ func ComputeCadence(repoPath, author string, since, until time.Time) (Cadence, e
 // measure, and it is left out of ReposCovered.
 func ComputeCadenceAcross(paths []string, authors []string, since, until time.Time) (Cadence, error) {
 	var (
-		timestamps []int64
-		branches   []string
-		scanned    int
-		firstErr   error
+		timestamps  []int64
+		branches    []string
+		scanned     int
+		contributed int
+		firstErr    error
 	)
 	for _, path := range dedupePaths(paths) {
 		branch := detectMainBranch(path)
@@ -74,6 +75,12 @@ func ComputeCadenceAcross(paths []string, authors []string, since, until time.Ti
 		}
 		scanned++
 		branches = append(branches, branch)
+		if len(ts) > 0 {
+			// Only a repo that actually yielded commits counts as covered. A
+			// repo the author never touched was examined, not covered, and
+			// counting it would overstate how much history the median rests on.
+			contributed++
+		}
 		timestamps = append(timestamps, ts...)
 	}
 	if scanned == 0 {
@@ -82,7 +89,7 @@ func ComputeCadenceAcross(paths []string, authors []string, since, until time.Ti
 
 	c := Cadence{
 		MainBranch:   joinBranches(branches),
-		ReposCovered: len(branches),
+		ReposCovered: contributed,
 	}
 	if len(timestamps) < 2 {
 		return c, nil

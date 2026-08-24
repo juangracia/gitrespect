@@ -137,10 +137,25 @@ func Terminal(stats git.RepoStats, breakdown string, bundle metrics.Bundle) erro
 	return nil
 }
 
+// metricCoverage names how much of the analysed set a metric actually rests on,
+// but only when that is less than everything.
+//
+// Silence here is what made the old single-repo behaviour misleading: the
+// numbers looked like they described every repository. Saying "across 3 of 5
+// repositories" costs one clause and removes the false impression; saying it
+// when the answer is "all of them" would just be noise.
+func metricCoverage(covered, analysed int) string {
+	if analysed <= 1 || covered <= 0 || covered >= analysed {
+		return ""
+	}
+	return fmt.Sprintf(" %s(across %d of %d repositories)%s", colorDim, covered, analysed, colorReset)
+}
+
 func renderMetrics(b metrics.Bundle) {
 	if b.CommitSize != nil && b.CommitSize.Total > 0 {
 		d := b.CommitSize
-		fmt.Printf("  %sCommit size distribution:%s\n", colorDim, colorReset)
+		fmt.Printf("  %sCommit size distribution:%s%s\n", colorDim, colorReset,
+			metricCoverage(d.ReposCovered, b.ReposAnalyzed))
 		rows := []struct {
 			label  string
 			bucket metrics.SizeBucket
@@ -163,7 +178,8 @@ func renderMetrics(b metrics.Bundle) {
 	}
 	if b.Cadence != nil {
 		c := b.Cadence
-		fmt.Printf("  %sIntegration cadence:%s\n", colorDim, colorReset)
+		fmt.Printf("  %sIntegration cadence:%s%s\n", colorDim, colorReset,
+			metricCoverage(c.ReposCovered, b.ReposAnalyzed))
 		switch {
 		case c.MainBranch == "":
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
@@ -178,7 +194,8 @@ func renderMetrics(b metrics.Bundle) {
 	}
 	if b.LeadTime != nil {
 		lt := b.LeadTime
-		fmt.Printf("  %sLead time (branch → main):%s\n", colorDim, colorReset)
+		fmt.Printf("  %sLead time (branch → main):%s%s\n", colorDim, colorReset,
+			metricCoverage(lt.ReposCovered, b.ReposAnalyzed))
 		switch {
 		case lt.MainBranch == "":
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
@@ -195,7 +212,8 @@ func renderMetrics(b metrics.Bundle) {
 	}
 	if b.Churn != nil {
 		c := b.Churn
-		fmt.Printf("  %sChurn rate:%s\n", colorDim, colorReset)
+		fmt.Printf("  %sChurn rate:%s%s\n", colorDim, colorReset,
+			metricCoverage(c.ReposCovered, b.ReposAnalyzed))
 		if c.AddedLines == 0 {
 			fmt.Printf("  └── %sno lines added in the %dd window before this period%s\n", colorDim, c.WindowDays, colorReset)
 		} else {
