@@ -57,8 +57,9 @@ func ComputeBaselineAcross(paths []string, authors []string, periodStart time.Ti
 	}
 
 	var (
-		perRepo  []git.RepoStats
-		firstErr error
+		perRepo     []git.RepoStats
+		contributed int
+		firstErr    error
 	)
 	for _, path := range dedupePaths(paths) {
 		// AnalyzeMulti rather than one Analyze per address: git ORs repeated
@@ -73,11 +74,16 @@ func ComputeBaselineAcross(paths []string, authors []string, periodStart time.Ti
 			continue
 		}
 		perRepo = append(perRepo, stats)
+		if stats.Commits > 0 {
+			// A repository with no prior commits by this author was read but
+			// contributed no history for the baseline to rest on.
+			contributed++
+		}
 	}
 	if len(perRepo) == 0 {
 		return b, coverageErr(firstErr)
 	}
-	b.ReposCovered = len(perRepo)
+	b.ReposCovered = contributed
 
 	// CombineStats already sums the lines and takes the earliest first commit
 	// and latest last commit, which is the union of activity this needs.

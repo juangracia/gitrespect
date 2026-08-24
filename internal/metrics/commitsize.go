@@ -68,9 +68,10 @@ func ComputeCommitSize(repoPath, author string, since, until time.Time, exclude 
 // distribution.
 func ComputeCommitSizeAcross(paths []string, authors []string, since, until time.Time, exclude []string) (CommitSizeDistribution, error) {
 	var (
-		dist     CommitSizeDistribution
-		scanned  int
-		firstErr error
+		dist        CommitSizeDistribution
+		scanned     int
+		contributed int
+		firstErr    error
 	)
 	for _, path := range dedupePaths(paths) {
 		records, err := scanNumstat(path, authors, since, until, exclude)
@@ -81,6 +82,12 @@ func ComputeCommitSizeAcross(paths []string, authors []string, since, until time
 			continue
 		}
 		scanned++
+		if len(records) > 0 {
+			// Read is not the same as covered. A repository the author never
+			// touched was examined and contributed nothing, and counting it
+			// would overstate how much history this distribution rests on.
+			contributed++
+		}
 		for _, r := range records {
 			dist.Counts[bucketFor(r.Total())]++
 			dist.Total++
@@ -89,6 +96,6 @@ func ComputeCommitSizeAcross(paths []string, authors []string, since, until time
 	if scanned == 0 {
 		return CommitSizeDistribution{}, coverageErr(firstErr)
 	}
-	dist.ReposCovered = scanned
+	dist.ReposCovered = contributed
 	return dist, nil
 }

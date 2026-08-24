@@ -30,9 +30,12 @@ type LeadTime struct {
 	// Method records how lead time was derived, since the two approaches are
 	// not directly comparable.
 	Method string `json:"method,omitempty"`
-	// ReposCovered is how many repositories were examined for lead time.
-	// Repositories with no main-like branch are not counted, since there was
-	// nothing in them to measure.
+	// ReposCovered is how many repositories the reported median rests on: those
+	// whose samples actually went into it, under whichever Method was used.
+	// When no median could be reported it falls back to how many repositories
+	// were examined, since the honest answer there is that the work was done
+	// and there was no signal in it. Repositories with no main-like branch are
+	// never counted, having had nothing to measure.
 	ReposCovered int `json:"repos_covered,omitempty"`
 }
 
@@ -89,9 +92,10 @@ func ComputeLeadTimeAcross(paths []string, authors []string, since, until time.T
 	}
 
 	var (
-		mergeDays []float64
-		branches  []string
-		measured  []target
+		mergeDays         []float64
+		branches          []string
+		measured          []target
+		mergeContributors int
 	)
 	for _, t := range targets {
 		days, err := mergeLeadTimes(t.path, t.branch, authors, since, until)
@@ -102,28 +106,45 @@ func ComputeLeadTimeAcross(paths []string, authors []string, since, until time.T
 			continue
 		}
 		scanned++
-		measured = append(measured, t)
 		branches = append(branches, t.branch)
+		// measured is every repository read well enough to answer the merge
+		// question, and it is what the authored fallback below iterates. It is
+		// deliberately NOT the coverage count: the fallback runs precisely when
+		// no repository produced a merge, so counting only those would leave it
+		// nothing to walk.
+		measured = append(measured, t)
+		if len(days) > 0 {
+			mergeContributors++
+		}
 		mergeDays = append(mergeDays, days...)
 	}
 	if scanned == 0 {
 		return LeadTime{}, coverageErr(firstErr)
 	}
 
-	lt := LeadTime{
-		MainBranch:   joinBranches(branches),
-		ReposCovered: len(measured),
-	}
+	// Default to the repositories examined. When a median IS reported below,
+	// this is narrowed to the repositories whose samples actually went into it,
+	// because that is what the report's "across N of M" claim describes. When
+	// nothing is reported, the examined count is the honest answer: the work was
+	// done, there was simply no signal in it.
+	lt := LeadTime{MainBranch: joinBranches(branches), ReposCovered: len(measured)}
 	if len(mergeDays) > 0 {
 		lt.MedianDays = median(mergeDays)
 		lt.Samples = len(mergeDays)
 		lt.Method = LeadTimeMerge
+		// Coverage describes the method actually reported, so it counts the
+		// repositories whose samples went into this median rather than every
+		// repository that was read.
+		lt.ReposCovered = mergeContributors
 		return lt, nil
 	}
 
 	// No merge commits anywhere in range. Fall back to author-to-landed, which
 	// still works for rebase and patch-based workflows.
-	var authoredDays []float64
+	var (
+		authoredDays         []float64
+		authoredContributors int
+	)
 	for _, t := range measured {
 		// A failure here is not fatal: the repo was read well enough to answer
 		// the merge question, and the run still has the other repos' samples.
@@ -131,11 +152,15 @@ func ComputeLeadTimeAcross(paths []string, authors []string, since, until time.T
 		if err != nil {
 			continue
 		}
+		if len(days) > 0 {
+			authoredContributors++
+		}
 		authoredDays = append(authoredDays, days...)
 	}
 	if len(authoredDays) < minAuthoredSamples {
 		return lt, nil
 	}
+	lt.ReposCovered = authoredContributors
 	lt.MedianDays = median(authoredDays)
 	lt.Samples = len(authoredDays)
 	lt.Method = LeadTimeAuthored

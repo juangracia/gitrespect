@@ -37,6 +37,7 @@ func ComputeChurnAcross(paths []string, authors []string, since, until time.Time
 		totalAdded   int
 		totalDeleted int
 		scanned      int
+		contributed  int
 		firstErr     error
 	)
 	for _, path := range dedupePaths(paths) {
@@ -55,6 +56,11 @@ func ComputeChurnAcross(paths []string, authors []string, since, until time.Time
 			continue
 		}
 		scanned++
+		if added > 0 || deleted > 0 {
+			// A repository the author added nothing to contributed nothing to
+			// this ratio, so counting it would overstate the coverage.
+			contributed++
+		}
 		totalAdded += added
 		totalDeleted += deleted
 	}
@@ -66,7 +72,7 @@ func ComputeChurnAcross(paths []string, authors []string, since, until time.Time
 		WindowDays:   int(window.Hours() / 24),
 		AddedLines:   totalAdded,
 		ChurnedLines: totalDeleted,
-		ReposCovered: scanned,
+		ReposCovered: contributed,
 	}
 	if totalAdded > 0 {
 		c.Ratio = float64(totalDeleted) / float64(totalAdded)
