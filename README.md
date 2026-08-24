@@ -649,6 +649,21 @@ counted differently per repo depending on which of them happens to carry an
 entry. Use `--roster` or `--alias` when you need the same identities applied
 uniformly across every repository regardless of what each one ships.
 
+There is one trap worth knowing. A `.mailmap` maps addresses *away* as well as
+together, so asking for someone's **old** address in a repo whose mailmap
+rewrites it returns **zero commits**, not their work:
+
+```
+.mailmap:  Alice <alice@corp.com> <alice@personal.example>
+
+-a alice@corp.com          -> all 3 of Alice's commits
+-a alice@personal.example  -> 0 commits
+```
+
+A confident zero is indistinguishable from "did no work", so if a contributor
+you know is active reports nothing, check the repo's `.mailmap` and use their
+canonical address. `git shortlog -sne` prints the mapped identities.
+
 `--exclude` patterns are matched against renamed files on both their old and
 their new path, so `-e 'vendor/*'` still excludes a file that was moved into or
 out of `vendor/`. A directory pattern excludes the whole subtree, `**` is
