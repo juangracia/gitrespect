@@ -29,6 +29,37 @@ func months(vals map[string]int) map[string]git.MonthStats {
 	return out
 }
 
+// netDays places each month's net output on the 15th of that month. The chart
+// and the breakdown table are both derived from the daily buckets, so a
+// fixture has to supply those and not only the monthly rollup.
+func netDays(vals map[string]int) map[string]git.DayStats {
+	out := make(map[string]git.DayStats, len(vals))
+	for k, net := range vals {
+		date := k + "-15"
+		if net < 0 {
+			out[date] = day(date, 0, -net, 1)
+			continue
+		}
+		out[date] = day(date, net, 0, 1)
+	}
+	return out
+}
+
+// memberStats builds one contributor's stats from a net-per-month map,
+// populating both the daily buckets everything is derived from and the monthly
+// rollup the JSON report still emits.
+func memberStats(netByMonth map[string]int) git.RepoStats {
+	net := 0
+	for _, v := range netByMonth {
+		net += v
+	}
+	return git.RepoStats{
+		Net:     net,
+		Monthly: months(netByMonth),
+		Daily:   netDays(netByMonth),
+	}
+}
+
 // teamStatsFixture has one member active every month, one who skipped a month
 // entirely, and one who netted negative. That mix exercises the union of
 // period keys and the negative branch of the y scale.
@@ -38,18 +69,9 @@ func teamStatsFixture() git.TeamStats {
 		Until:    time.Date(2025, 3, 31, 0, 0, 0, 0, time.UTC),
 		TotalNet: 1300,
 		Members: map[string]git.RepoStats{
-			"ana@example.com": {
-				Net: 900, Added: 1100, Deleted: 200, Commits: 30,
-				Monthly: months(map[string]int{"2025-01": 300, "2025-02": 250, "2025-03": 350}),
-			},
-			"bo@example.com": {
-				Net: 500, Added: 600, Deleted: 100, Commits: 12,
-				Monthly: months(map[string]int{"2025-01": 100, "2025-03": 400}),
-			},
-			"cy@example.com": {
-				Net: -100, Added: 20, Deleted: 120, Commits: 3,
-				Monthly: months(map[string]int{"2025-02": -100}),
-			},
+			"ana@example.com": memberStats(map[string]int{"2025-01": 300, "2025-02": 250, "2025-03": 350}),
+			"bo@example.com":  memberStats(map[string]int{"2025-01": 100, "2025-03": 400}),
+			"cy@example.com":  memberStats(map[string]int{"2025-02": -100}),
 		},
 		Monthly: months(map[string]int{"2025-01": 400, "2025-02": 150, "2025-03": 750}),
 		Daily: map[string]git.DayStats{
@@ -128,8 +150,8 @@ func TestFormatChartNumber(t *testing.T) {
 		{math.Inf(1), "0"},
 	}
 	for _, tt := range tests {
-		if got := formatChartNumber(tt.in); got != tt.want {
-			t.Errorf("formatChartNumber(%v) = %q, want %q", tt.in, got, tt.want)
+		if got := formatRoundedNumber(tt.in); got != tt.want {
+			t.Errorf("formatRoundedNumber(%v) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
@@ -175,9 +197,9 @@ func TestShortSeriesLabel(t *testing.T) {
 	}
 }
 
-func TestMonthlySeries(t *testing.T) {
+func TestBreakdownSeriesMonthly(t *testing.T) {
 	stats := sampleStats()
-	s := MonthlySeries(stats, "dev@example.com")
+	s := BreakdownSeries(stats, "monthly", "dev@example.com")
 
 	if s.Label != "dev@example.com" {
 		t.Errorf("label = %q", s.Label)
@@ -202,24 +224,197 @@ func TestMonthlySeries(t *testing.T) {
 	}
 }
 
-func TestMonthlySeriesEmpty(t *testing.T) {
-	if s := MonthlySeries(git.RepoStats{}, "nobody"); len(s.Points) != 0 {
+func TestBreakdownSeriesEmpty(t *testing.T) {
+	if s := BreakdownSeries(git.RepoStats{}, "monthly", "nobody"); len(s.Points) != 0 {
 		t.Errorf("empty stats produced %d points", len(s.Points))
 	}
 }
 
-func TestMonthKeyLabelFallsBackToKey(t *testing.T) {
-	// A bucket whose year and month never parsed still has to name itself.
-	if got := monthKeyLabel("2025-13", git.MonthStats{}); got != "2025-13" {
-		t.Errorf("monthKeyLabel = %q, want the raw key", got)
+// TestBreakdownSeriesFollowsGranularity is the guarantee that motivated the
+// change: the chart must plot the same periods as the table beside it, so it
+// is built from the same git.Breakdown rows.
+func TestBreakdownSeriesFollowsGranularity(t *testing.T) {
+	stats := sampleStats()
+
+	for _, granularity := range []string{"monthly", "weekly", "daily"} {
+		t.Run(granularity, func(t *testing.T) {
+			rows := git.Breakdown(stats, granularity)
+			series := BreakdownSeries(stats, granularity, "dev@example.com")
+
+			if len(series.Points) != len(rows) {
+				t.Fatalf("chart has %d points but the table has %d rows", len(series.Points), len(rows))
+			}
+			for i, r := range rows {
+				p := series.Points[i]
+				if p.Key != r.Key || p.Label != r.Label {
+					t.Errorf("point %d is %q/%q, table row is %q/%q", i, p.Key, p.Label, r.Key, r.Label)
+				}
+				if p.Value != float64(r.Net) {
+					t.Errorf("point %d plots %v but the table says %d", i, p.Value, r.Net)
+				}
+			}
+		})
 	}
-	if got := monthKeyLabel("2025-06", git.MonthStats{Year: 2025, Month: 6}); got != "Jun 2025" {
-		t.Errorf("monthKeyLabel = %q, want %q", got, "Jun 2025")
+
+	// The three granularities really are different, so the check above is not
+	// passing by accident.
+	monthly := BreakdownSeries(stats, "monthly", "x")
+	weekly := BreakdownSeries(stats, "weekly", "x")
+	daily := BreakdownSeries(stats, "daily", "x")
+	if len(monthly.Points) == len(daily.Points) || len(weekly.Points) == len(daily.Points) {
+		t.Errorf("granularities collapsed: monthly %d, weekly %d, daily %d",
+			len(monthly.Points), len(weekly.Points), len(daily.Points))
+	}
+	if monthly.Points[0].Label != "Jan 2025" {
+		t.Errorf("monthly label = %q", monthly.Points[0].Label)
+	}
+	if !strings.HasPrefix(weekly.Points[0].Label, "Week of ") {
+		t.Errorf("weekly label = %q", weekly.Points[0].Label)
+	}
+	if daily.Points[0].Label != "Jan 15 2025" {
+		t.Errorf("daily label = %q", daily.Points[0].Label)
 	}
 }
 
-func TestTeamSeriesOneLinePerMember(t *testing.T) {
-	series := TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true})
+func TestBreakdownSeriesRejectsUnknownGranularity(t *testing.T) {
+	for _, g := range []string{"", "hourly", "quarterly"} {
+		if s := BreakdownSeries(sampleStats(), g, "x"); len(s.Points) != 0 {
+			t.Errorf("granularity %q produced %d points, want none so the caller can explain itself", g, len(s.Points))
+		}
+	}
+}
+
+func TestChartGranularityTitle(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"monthly", "Net Lines by Month"},
+		{"weekly", "Net Lines by Week"},
+		{"daily", "Net Lines by Day"},
+		{"", "Net Lines by Period"},
+	}
+	for _, tt := range tests {
+		if got := chartGranularityTitle(tt.in); got != tt.want {
+			t.Errorf("chartGranularityTitle(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestRenderChartDailyOverAYear is the stress case: a year of daily points has
+// to thin its labels and drop its markers rather than turning into mush.
+func TestRenderChartDailyOverAYear(t *testing.T) {
+	stats := git.RepoStats{Daily: map[string]git.DayStats{}}
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 365; i++ {
+		d := start.AddDate(0, 0, i).Format("2006-01-02")
+		stats.Daily[d] = day(d, 100+i%40, 20+i%15, 1)
+	}
+
+	series := BreakdownSeries(stats, "daily", "dev@example.com")
+	if len(series.Points) != 365 {
+		t.Fatalf("got %d points, want 365", len(series.Points))
+	}
+
+	out := RenderChart([]ChartSeries{series}, ChartRenderOptions{Title: chartGranularityTitle("daily")})
+	assertWellFormedSVG(t, out)
+	body := string(out)
+
+	labels := xTickLabels(t, out)
+	if len(labels) > 14 {
+		t.Errorf("drew %d x labels for 365 days, they would overlap", len(labels))
+	}
+	if len(labels) < 3 {
+		t.Errorf("thinned 365 days down to %d labels, which names almost nothing", len(labels))
+	}
+	if last := labels[len(labels)-1]; last != series.Points[364].Label {
+		t.Errorf("last x label = %q, want the most recent day %q", last, series.Points[364].Label)
+	}
+
+	// Markers at this density read as a solid band, so they are dropped.
+	if strings.Contains(body, `<circle class="gr-chart-dot"`) {
+		t.Error("365 points should not each carry a marker")
+	}
+	// The line itself, its end label and every hover band are still there.
+	if got := strings.Count(body, `class="gr-chart-line"`); got != 1 {
+		t.Errorf("drew %d lines, want 1", got)
+	}
+	if !strings.Contains(body, `<text class="gr-chart-end"`) {
+		t.Error("the end-of-line label went missing")
+	}
+	if got := strings.Count(body, `class="gr-chart-hit"`); got != 365 {
+		t.Errorf("got %d hover bands, want one per day", got)
+	}
+
+	// Every hover band must be wide enough to actually hit with a mouse.
+	for _, w := range hitBandWidths(t, out) {
+		if w <= 0 {
+			t.Fatalf("a hover band has width %v", w)
+		}
+	}
+
+	// Only the labelled periods are tab stops: 365 of them would trap a
+	// keyboard user inside one chart.
+	tabStops := strings.Count(body, `<rect class="gr-chart-hit" tabindex="0"`)
+	if tabStops != len(labels) {
+		t.Errorf("got %d tab stops for %d labelled periods, want them to match", tabStops, len(labels))
+	}
+}
+
+// TestRenderChartTabStopsFollowLabels checks the keyboard path both ways: a
+// short axis keeps every period focusable, a crowded one does not.
+func TestRenderChartTabStopsFollowLabels(t *testing.T) {
+	short := RenderChart(
+		[]ChartSeries{BreakdownSeries(sampleStats(), "monthly", "dev")},
+		ChartRenderOptions{Title: "t"},
+	)
+	body := string(short)
+	if got, bands := strings.Count(body, `tabindex="0"`), strings.Count(body, `class="gr-chart-hit"`); got != bands {
+		t.Errorf("a three period chart has %d tab stops for %d periods, want every one reachable", got, bands)
+	}
+
+	stats := git.RepoStats{Daily: map[string]git.DayStats{}}
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 200; i++ {
+		d := start.AddDate(0, 0, i).Format("2006-01-02")
+		stats.Daily[d] = day(d, 50, 10, 1)
+	}
+	crowded := RenderChart(
+		[]ChartSeries{BreakdownSeries(stats, "daily", "dev")},
+		ChartRenderOptions{Title: "t"},
+	)
+	body = string(crowded)
+	stops := strings.Count(body, `tabindex="0"`)
+	bands := strings.Count(body, `class="gr-chart-hit"`)
+	if bands != 200 {
+		t.Fatalf("got %d hover bands, want 200", bands)
+	}
+	if stops >= bands {
+		t.Errorf("200 periods produced %d tab stops, want only the labelled ones", stops)
+	}
+	if stops == 0 {
+		t.Error("the chart is unreachable by keyboard entirely")
+	}
+}
+
+// hitBandWidths returns the width of every hover band, in SVG user units.
+func hitBandWidths(t *testing.T, out template.HTML) []float64 {
+	t.Helper()
+	var widths []float64
+	for _, chunk := range strings.Split(svgFragment(t, out), `class="gr-chart-hit"`)[1:] {
+		i := strings.Index(chunk, `width="`)
+		if i < 0 {
+			t.Fatal("a hover band has no width")
+		}
+		rest := chunk[i+len(`width="`):]
+		w, err := strconv.ParseFloat(rest[:strings.Index(rest, `"`)], 64)
+		if err != nil {
+			t.Fatalf("unparseable hover band width: %v", err)
+		}
+		widths = append(widths, w)
+	}
+	return widths
+}
+
+func TestTeamBreakdownSeriesOneLinePerMember(t *testing.T) {
+	series := TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true})
 	if len(series) != 3 {
 		t.Fatalf("got %d series, want one per member", len(series))
 	}
@@ -239,18 +434,18 @@ func TestTeamSeriesOneLinePerMember(t *testing.T) {
 	}
 }
 
-func TestTeamSeriesEmpty(t *testing.T) {
-	if s := TeamSeries(git.TeamStats{}, ChartOptions{Enabled: true}); s != nil {
+func TestTeamBreakdownSeriesEmpty(t *testing.T) {
+	if s := TeamBreakdownSeries(git.TeamStats{}, "monthly", ChartOptions{Enabled: true}); s != nil {
 		t.Errorf("empty team produced %+v, want nil", s)
 	}
 	noMonths := git.TeamStats{Members: map[string]git.RepoStats{"a@b.c": {Net: 10}}}
-	if s := TeamSeries(noMonths, ChartOptions{Enabled: true}); s != nil {
+	if s := TeamBreakdownSeries(noMonths, "monthly", ChartOptions{Enabled: true}); s != nil {
 		t.Errorf("members with no monthly buckets produced %+v, want nil", s)
 	}
 }
 
-func TestTeamSeriesHighlightAddsTeamAverage(t *testing.T) {
-	series := TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true, Highlight: "bo@example.com"})
+func TestTeamBreakdownSeriesHighlightAddsTeamAverage(t *testing.T) {
+	series := TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true, Highlight: "bo@example.com"})
 	if len(series) != 2 {
 		t.Fatalf("got %d series, want the member and the team average", len(series))
 	}
@@ -278,10 +473,10 @@ func TestTeamSeriesHighlightAddsTeamAverage(t *testing.T) {
 	}
 }
 
-func TestTeamSeriesHighlightMissAndCaseInsensitivity(t *testing.T) {
+func TestTeamBreakdownSeriesHighlightMissAndCaseInsensitivity(t *testing.T) {
 	// An unknown highlight falls back to one line per member rather than
 	// silently charting nothing.
-	series := TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true, Highlight: "ghost@example.com"})
+	series := TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true, Highlight: "ghost@example.com"})
 	if len(series) != 3 {
 		t.Errorf("unmatched highlight gave %d series, want all members", len(series))
 	}
@@ -291,17 +486,17 @@ func TestTeamSeriesHighlightMissAndCaseInsensitivity(t *testing.T) {
 		}
 	}
 
-	upper := TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true, Highlight: "  BO@Example.com  "})
+	upper := TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true, Highlight: "  BO@Example.com  "})
 	if len(upper) != 2 || !upper[0].Accent {
 		t.Errorf("highlight matching should ignore case and surrounding space, got %d series", len(upper))
 	}
 }
 
-func TestTeamSeriesHighlightOnAOnePersonTeam(t *testing.T) {
+func TestTeamBreakdownSeriesHighlightOnAOnePersonTeam(t *testing.T) {
 	stats := git.TeamStats{Members: map[string]git.RepoStats{
-		"solo@example.com": {Monthly: months(map[string]int{"2025-01": 100, "2025-02": 200})},
+		"solo@example.com": memberStats(map[string]int{"2025-01": 100, "2025-02": 200}),
 	}}
-	series := TeamSeries(stats, ChartOptions{Enabled: true, Highlight: "solo@example.com"})
+	series := TeamBreakdownSeries(stats, "monthly", ChartOptions{Enabled: true, Highlight: "solo@example.com"})
 	if len(series) != 1 {
 		t.Fatalf("got %d series, want just the member: the average of a team of one is that member", len(series))
 	}
@@ -310,16 +505,14 @@ func TestTeamSeriesHighlightOnAOnePersonTeam(t *testing.T) {
 	}
 }
 
-func TestTeamSeriesFoldsPastEightMembers(t *testing.T) {
+func TestTeamBreakdownSeriesFoldsPastEightMembers(t *testing.T) {
 	stats := git.TeamStats{Members: map[string]git.RepoStats{}}
 	for i := 0; i < 12; i++ {
 		// Later members are quieter, so the folded tail is predictable.
-		stats.Members[fmt.Sprintf("dev%02d@example.com", i)] = git.RepoStats{
-			Monthly: months(map[string]int{"2025-01": 1000 - i*10, "2025-02": 500}),
-		}
+		stats.Members[fmt.Sprintf("dev%02d@example.com", i)] = memberStats(map[string]int{"2025-01": 1000 - i*10, "2025-02": 500})
 	}
 
-	series := TeamSeries(stats, ChartOptions{Enabled: true})
+	series := TeamBreakdownSeries(stats, "monthly", ChartOptions{Enabled: true})
 	if len(series) != chartMaxSeries {
 		t.Fatalf("got %d series, want %d", len(series), chartMaxSeries)
 	}
@@ -345,14 +538,12 @@ func TestTeamSeriesFoldsPastEightMembers(t *testing.T) {
 
 // TestTeamSeriesKeepsExactlyEightUnfolded checks the boundary: eight members
 // still get eight named lines, and folding only starts at the ninth.
-func TestTeamSeriesKeepsExactlyEightUnfolded(t *testing.T) {
+func TestTeamBreakdownSeriesKeepsExactlyEightUnfolded(t *testing.T) {
 	stats := git.TeamStats{Members: map[string]git.RepoStats{}}
 	for i := 0; i < chartMaxSeries; i++ {
-		stats.Members[fmt.Sprintf("dev%02d@example.com", i)] = git.RepoStats{
-			Monthly: months(map[string]int{"2025-01": 100 - i}),
-		}
+		stats.Members[fmt.Sprintf("dev%02d@example.com", i)] = memberStats(map[string]int{"2025-01": 100 - i})
 	}
-	series := TeamSeries(stats, ChartOptions{Enabled: true})
+	series := TeamBreakdownSeries(stats, "monthly", ChartOptions{Enabled: true})
 	if len(series) != chartMaxSeries {
 		t.Fatalf("got %d series, want %d", len(series), chartMaxSeries)
 	}
@@ -362,8 +553,8 @@ func TestTeamSeriesKeepsExactlyEightUnfolded(t *testing.T) {
 		}
 	}
 
-	stats.Members["dev99@example.com"] = git.RepoStats{Monthly: months(map[string]int{"2025-01": 1})}
-	folded := TeamSeries(stats, ChartOptions{Enabled: true})
+	stats.Members["dev99@example.com"] = memberStats(map[string]int{"2025-01": 1})
+	folded := TeamBreakdownSeries(stats, "monthly", ChartOptions{Enabled: true})
 	if len(folded) != chartMaxSeries {
 		t.Fatalf("nine members gave %d series, want %d", len(folded), chartMaxSeries)
 	}
@@ -499,7 +690,7 @@ func TestRenderChartHonoursCanvasSize(t *testing.T) {
 // TestRenderChartUnionsPeriods is the alignment guarantee: a member missing a
 // month still has a point on that month's x position.
 func TestRenderChartUnionsPeriods(t *testing.T) {
-	series := TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true})
+	series := TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true})
 	out := RenderChart(series, ChartRenderOptions{Title: "Net Lines by Month"})
 	assertWellFormedSVG(t, out)
 
@@ -621,7 +812,7 @@ func TestRenderChartLegendAndDirectLabels(t *testing.T) {
 		t.Error("a single series should still be labelled at the end of its line")
 	}
 
-	team := string(RenderChart(TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true}), ChartRenderOptions{Title: "Net Lines by Month"}))
+	team := string(RenderChart(TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true}), ChartRenderOptions{Title: "Net Lines by Month"}))
 	if !strings.Contains(team, `<div class="gr-chart-legend">`) {
 		t.Error("three series must carry a legend: identity is never colour alone")
 	}
@@ -649,7 +840,7 @@ func TestRenderChartLegendAndDirectLabels(t *testing.T) {
 }
 
 func TestRenderChartHighlightDrawsDashedReference(t *testing.T) {
-	series := TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true, Highlight: "ana@example.com"})
+	series := TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true, Highlight: "ana@example.com"})
 	out := string(RenderChart(series, ChartRenderOptions{Title: "ana vs team"}))
 	assertWellFormedSVG(t, template.HTML(out))
 
@@ -693,7 +884,7 @@ func TestRenderChartZeroLineOnlyWhenCrossing(t *testing.T) {
 }
 
 func TestRenderChartIsSelfContainedAndStatic(t *testing.T) {
-	out := string(RenderChart(TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true}), ChartRenderOptions{Title: "Net Lines by Month"}))
+	out := string(RenderChart(TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true}), ChartRenderOptions{Title: "Net Lines by Month"}))
 
 	// A self-contained report cannot reach the network.
 	for _, forbidden := range []string{"http://", "https://", "//cdn", "src=\"//"} {
@@ -714,7 +905,7 @@ func TestRenderChartIsSelfContainedAndStatic(t *testing.T) {
 }
 
 func TestRenderChartIsDeterministic(t *testing.T) {
-	series := TeamSeries(teamStatsFixture(), ChartOptions{Enabled: true})
+	series := TeamBreakdownSeries(teamStatsFixture(), "monthly", ChartOptions{Enabled: true})
 	opts := ChartRenderOptions{Title: "Net Lines by Month"}
 	first := RenderChart(series, opts)
 	for i := 0; i < 5; i++ {

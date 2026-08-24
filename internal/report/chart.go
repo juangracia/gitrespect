@@ -75,10 +75,13 @@ const (
 	chartMaxTicks     = 12
 )
 
-// MonthlySeries builds a single line from a repo's monthly buckets, plotting
-// net lines per month.
-func MonthlySeries(stats git.RepoStats, label string) ChartSeries {
-	return ChartSeries{Label: label, Points: monthlyPoints(stats.Monthly)}
+// BreakdownSeries builds a single line from a repo's activity at the given
+// granularity, plotting net lines per period.
+//
+// It reads the same git.Breakdown rows the table beside it is built from, so
+// the chart and the table can never disagree about what a period covers.
+func BreakdownSeries(stats git.RepoStats, granularity, label string) ChartSeries {
+	return ChartSeries{Label: label, Points: breakdownPoints(stats, granularity)}
 }
 
 // chartMember is one candidate line while the team chart is being assembled.
@@ -88,10 +91,11 @@ type chartMember struct {
 	total float64 // absolute output, used only to decide who survives the cap
 }
 
-// TeamSeries builds one line per team member. When opts.Highlight names a
-// member, the result is instead that member's line plus a derived team
-// average, so a single developer can read their own trend against the group.
-func TeamSeries(stats git.TeamStats, opts ChartOptions) []ChartSeries {
+// TeamBreakdownSeries builds one line per team member at the given
+// granularity. When opts.Highlight names a member, the result is instead that
+// member's line plus a derived team average, so a single developer can read
+// their own trend against the group.
+func TeamBreakdownSeries(stats git.TeamStats, granularity string, opts ChartOptions) []ChartSeries {
 	emails := make([]string, 0, len(stats.Members))
 	for e := range stats.Members {
 		emails = append(emails, e)
@@ -100,7 +104,7 @@ func TeamSeries(stats git.TeamStats, opts ChartOptions) []ChartSeries {
 
 	members := make([]chartMember, 0, len(emails))
 	for _, e := range emails {
-		pts := monthlyPoints(stats.Members[e].Monthly)
+		pts := breakdownPoints(stats.Members[e], granularity)
 		if len(pts) == 0 {
 			continue
 		}
@@ -159,28 +163,31 @@ func TeamSeries(stats git.TeamStats, opts ChartOptions) []ChartSeries {
 	return out
 }
 
-// monthlyPoints turns a monthly bucket map into points sorted oldest first.
-func monthlyPoints(monthly map[string]git.MonthStats) []ChartPoint {
-	keys := make([]string, 0, len(monthly))
-	for k := range monthly {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	pts := make([]ChartPoint, 0, len(keys))
-	for _, k := range keys {
-		m := monthly[k]
-		pts = append(pts, ChartPoint{Key: k, Label: monthKeyLabel(k, m), Value: float64(m.Net)})
+// breakdownPoints turns a repo's activity into points sorted oldest first.
+// git.Breakdown already returns rows in key order with a display label, so the
+// chart inherits the table's grouping rules rather than repeating them.
+func breakdownPoints(stats git.RepoStats, granularity string) []ChartPoint {
+	rows := git.Breakdown(stats, granularity)
+	pts := make([]ChartPoint, 0, len(rows))
+	for _, r := range rows {
+		pts = append(pts, ChartPoint{Key: r.Key, Label: r.Label, Value: float64(r.Net)})
 	}
 	return pts
 }
 
-// monthKeyLabel names a "2006-01" bucket, falling back to the raw key so a
-// bucket with no parsed year or month still lines up on the axis.
-func monthKeyLabel(key string, m git.MonthStats) string {
-	if m.Year > 0 && m.Month >= 1 && m.Month <= 12 {
-		return fmt.Sprintf("%s %d", getMonthName(m.Month), m.Year)
+// chartGranularityTitle names what the chart plots, so a screenshot pasted
+// somewhere without its command line still says what a point covers.
+func chartGranularityTitle(granularity string) string {
+	switch granularity {
+	case "weekly":
+		return "Net Lines by Week"
+	case "daily":
+		return "Net Lines by Day"
+	case "monthly":
+		return "Net Lines by Month"
+	default:
+		return "Net Lines by Period"
 	}
-	return key
 }
 
 // averagePoints derives the per-period mean across members. The divisor is
@@ -541,8 +548,16 @@ func RenderChart(series []ChartSeries, opts ChartRenderOptions) template.HTML {
 		if i < n-1 {
 			right = (xAt(i) + xAt(i+1)) / 2
 		}
-		fmt.Fprintf(&b, "<rect class=\"gr-chart-hit\" tabindex=\"0\" x=\"%s\" y=\"%s\" width=\"%s\" height=\"%s\" data-i=\"%d\" data-cx=\"%s\" data-x=\"%s\"/>",
-			num(left), num(plotTop), num(right-left), num(plotH), i, num(xAt(i)), esc(labels[k]))
+		// Every period stays hoverable, but only the labelled ones are tab
+		// stops. A year of daily points would otherwise put 365 stops between
+		// a keyboard user and the rest of the page, and the breakdown table
+		// below already lists every period.
+		tab := ""
+		if xStep == 1 || (n-1-i)%xStep == 0 {
+			tab = " tabindex=\"0\""
+		}
+		fmt.Fprintf(&b, "<rect class=\"gr-chart-hit\"%s x=\"%s\" y=\"%s\" width=\"%s\" height=\"%s\" data-i=\"%d\" data-cx=\"%s\" data-x=\"%s\"/>",
+			tab, num(left), num(plotTop), num(right-left), num(plotH), i, num(xAt(i)), esc(labels[k]))
 	}
 	b.WriteString("</svg>")
 	b.WriteString("<div class=\"gr-chart-tip\" aria-hidden=\"true\"></div>")
@@ -719,14 +734,15 @@ func niceTicks(min, max float64, target int) (lo, hi, step float64) {
 func joinValues(values []float64) string {
 	parts := make([]string, len(values))
 	for i, v := range values {
-		parts[i] = formatChartNumber(v)
+		parts[i] = formatRoundedNumber(v)
 	}
 	return strings.Join(parts, ";")
 }
 
-// formatChartNumber renders a plotted value the same way the terminal report
-// renders the same figure, so the chart and the table beside it agree.
-func formatChartNumber(v float64) string {
+// formatRoundedNumber renders a float count the way the terminal report renders
+// the same figure, so a rate in the chart, the stat card and the table all
+// agree. Counts are whole things, so it rounds rather than showing decimals.
+func formatRoundedNumber(v float64) string {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return "0"
 	}
@@ -742,7 +758,7 @@ func formatAxisNumber(v float64) string {
 	case a >= 1e4:
 		return strconv.FormatFloat(v/1e3, 'f', 0, 64) + "k"
 	default:
-		return formatChartNumber(v)
+		return formatRoundedNumber(v)
 	}
 }
 

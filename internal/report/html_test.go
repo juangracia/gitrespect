@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +206,302 @@ func TestTeamCompareHTMLShowsNoBaseline(t *testing.T) {
 	}
 }
 
+// sevenFigureStats is the shape this release exists to report on: a year of
+// team output, where every headline number is seven digits.
+func sevenFigureStats() git.RepoStats {
+	return git.RepoStats{
+		Author:  "dev@example.com",
+		Since:   mustTime("2025-01-01"),
+		Until:   mustTime("2025-12-31"),
+		Added:   1481000,
+		Deleted: 246433,
+		Net:     1234567,
+		Commits: 12045,
+		Daily: map[string]git.DayStats{
+			"2025-03-15": day("2025-03-15", 740500, 123216, 6000),
+			"2025-09-15": day("2025-09-15", 740500, 123217, 6045),
+		},
+	}
+}
+
+// TestHTMLGroupsSevenFigureNumbers is the readability fix: the HTML report
+// used to print a bare 1234567 in a 28px stat card.
+func TestHTMLGroupsSevenFigureNumbers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := HTML(sevenFigureStats(), path, "monthly", "dark", metrics.Bundle{}); err != nil {
+		t.Fatalf("HTML: %v", err)
+	}
+	body := assertRenderedHTML(t, path)
+
+	for _, want := range []string{
+		`<div class="stat-value added">+1,481,000</div>`,
+		`<div class="stat-value deleted">-246,433</div>`,
+		`<div class="stat-value net">1,234,567</div>`,
+		`<div class="stat-value">12,045</div>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing grouped stat card %q", want)
+		}
+	}
+	assertNoUngroupedNumbers(t, path, body)
+}
+
+func TestTeamHTMLGroupsSevenFigureNumbers(t *testing.T) {
+	stats := git.TeamStats{
+		Since:        mustTime("2025-01-01"),
+		Until:        mustTime("2025-12-31"),
+		TotalAdded:   2481000,
+		TotalDeleted: 1246433,
+		TotalNet:     1234567,
+		TotalCommits: 24090,
+		Members: map[string]git.RepoStats{
+			"ana@example.com": {Added: 1481000, Deleted: 246433, Net: 1234567, Commits: 12045},
+		},
+		Daily: sevenFigureStats().Daily,
+	}
+
+	path := filepath.Join(t.TempDir(), "team.html")
+	if err := TeamHTML(stats, path, "light", "monthly", nil); err != nil {
+		t.Fatalf("TeamHTML: %v", err)
+	}
+	body := assertRenderedHTML(t, path)
+
+	for _, want := range []string{
+		`<div class="stat-value net">1,234,567</div>`,
+		`<div class="stat-value">24,090</div>`,
+		`<td>+1,481,000</td>`,
+		`<td>1,234,567</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing grouped value %q", want)
+		}
+	}
+	assertNoUngroupedNumbers(t, path, body)
+}
+
+func TestCompareHTMLGroupsNumbers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compare.html")
+	c := git.CompareStats{
+		BeforeLabel: "2024",
+		AfterLabel:  "2025",
+		Before:      git.RepoStats{Net: 1234567, Since: mustTime("2024-01-01"), Until: mustTime("2024-12-31")},
+		After:       git.RepoStats{Net: 2345678, Since: mustTime("2025-01-01"), Until: mustTime("2025-12-31")},
+	}
+	if err := CompareHTML(c, path, "dark"); err != nil {
+		t.Fatalf("CompareHTML: %v", err)
+	}
+	body := assertRenderedHTML(t, path)
+	for _, want := range []string{"1,234,567", "2,345,678"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing grouped value %q", want)
+		}
+	}
+	assertNoUngroupedNumbers(t, path, body)
+}
+
+// TestTeamCompareHTMLGroupsNegativeNumbers covers the sign path, since net
+// lines go negative whenever deletions outweigh additions.
+func TestTeamCompareHTMLGroupsNegativeNumbers(t *testing.T) {
+	c := teamCompareFixture()
+	before := c.Before.Members["leaver@example.com"]
+	before.Net = -1234567
+	c.Before.Members["leaver@example.com"] = before
+
+	path := filepath.Join(t.TempDir(), "team-compare.html")
+	if err := TeamCompareHTML(c, path, "dark"); err != nil {
+		t.Fatalf("TeamCompareHTML: %v", err)
+	}
+	body := assertRenderedHTML(t, path)
+	if !strings.Contains(body, "-1,234,567") {
+		t.Errorf("a negative seven-figure net was not grouped:\n%s", body)
+	}
+	assertNoUngroupedNumbers(t, path, body)
+}
+
+// assertNoUngroupedNumbers is the guard against a headline figure being added
+// later without the grouping function.
+//
+// It is scoped to the elements that carry counts, not to the whole document:
+// a period label is legitimately "2025", and inline CSS and SVG geometry are
+// full of bare numbers that must stay bare.
+func assertNoUngroupedNumbers(t *testing.T, path, body string) {
+	t.Helper()
+	for _, m := range ungroupedFigure.FindAllString(body, -1) {
+		t.Errorf("%s renders an ungrouped figure: %s", path, m)
+	}
+}
+
+var ungroupedFigure = regexp.MustCompile(
+	`<div class="(?:stat-value[^"]*|daily-stat|period-value[^"]*|period-perday)">[+-]?\d{4,}\b`)
+
+// TestUngroupedFigureGuardWorks checks the guard above can actually fail. A
+// regression detector that matches nothing passes every test for free.
+func TestUngroupedFigureGuardWorks(t *testing.T) {
+	shouldFlag := []string{
+		`<div class="stat-value net">1234567</div>`,
+		`<div class="stat-value added">+1481000</div>`,
+		`<div class="stat-value deleted">-246433</div>`,
+		`<div class="daily-stat">4748</div>`,
+		`<div class="period-value after">2345678</div>`,
+	}
+	for _, s := range shouldFlag {
+		if !ungroupedFigure.MatchString(s) {
+			t.Errorf("the guard would not catch %s", s)
+		}
+	}
+
+	shouldPass := []string{
+		`<div class="stat-value net">1,234,567</div>`,
+		`<div class="daily-stat">4,748</div>`,
+		`<div class="stat-value">999</div>`,
+		// A period label really is a bare four digit number.
+		`<div class="period-label">2025</div>`,
+		`<div class="period">Jan 1, 2025 — Dec 31, 2025</div>`,
+	}
+	for _, s := range shouldPass {
+		if ungroupedFigure.MatchString(s) {
+			t.Errorf("the guard wrongly flags %s", s)
+		}
+	}
+}
+
+// TestChartNoteExplainsAMissingChart covers the lead's rule that a chart the
+// report cannot draw is explained rather than silently dropped.
+func TestChartNoteExplainsAMissingChart(t *testing.T) {
+	dir := t.TempDir()
+
+	// Asked for a chart but gave no granularity: nothing says what a point
+	// would cover.
+	noBreakdown := filepath.Join(dir, "no-breakdown.html")
+	err := HTMLWithOptions(sampleStats(), noBreakdown, "", "dark", metrics.Bundle{}, ChartOptions{Enabled: true})
+	if err != nil {
+		t.Fatalf("HTMLWithOptions: %v", err)
+	}
+	body := assertRenderedHTML(t, noBreakdown)
+	if !strings.Contains(body, "needs --breakdown") {
+		t.Errorf("the report does not explain the missing chart:\n%s", body)
+	}
+	if strings.Contains(body, "<svg viewBox=") {
+		t.Error("a chart was drawn without a granularity to draw it at")
+	}
+
+	// A valid granularity with nothing in range gets a different reason.
+	noData := filepath.Join(dir, "no-data.html")
+	err = HTMLWithOptions(git.RepoStats{}, noData, "weekly", "dark", metrics.Bundle{}, ChartOptions{Enabled: true})
+	if err != nil {
+		t.Fatalf("HTMLWithOptions: %v", err)
+	}
+	body = assertRenderedHTML(t, noData)
+	if !strings.Contains(body, "no weekly period in this range has any activity") {
+		t.Errorf("the report does not explain the empty chart:\n%s", body)
+	}
+
+	// A chart that renders carries no note at all.
+	fine := filepath.Join(dir, "fine.html")
+	err = HTMLWithOptions(sampleStats(), fine, "monthly", "dark", metrics.Bundle{}, ChartOptions{Enabled: true})
+	if err != nil {
+		t.Fatalf("HTMLWithOptions: %v", err)
+	}
+	body = assertRenderedHTML(t, fine)
+	if strings.Contains(body, "Chart not shown") {
+		t.Error("a rendered chart still carried a not-shown note")
+	}
+
+	// And a report that never asked for a chart says nothing either way.
+	silent := filepath.Join(dir, "silent.html")
+	if err := HTML(sampleStats(), silent, "", "dark", metrics.Bundle{}); err != nil {
+		t.Fatalf("HTML: %v", err)
+	}
+	if strings.Contains(assertRenderedHTML(t, silent), "Chart not shown") {
+		t.Error("a report that never asked for a chart explained its absence")
+	}
+}
+
+func TestChartUnavailableNote(t *testing.T) {
+	tests := []struct {
+		name        string
+		rendered    bool
+		granularity string
+		want        string
+	}{
+		{"rendered charts say nothing", true, "monthly", ""},
+		{"rendered without a granularity still says nothing", true, "", ""},
+		{"no granularity", false, "", "Chart not shown: a trend chart needs --breakdown to say what a point covers."},
+		{"unknown granularity", false, "hourly", "Chart not shown: a trend chart needs --breakdown to say what a point covers."},
+		{"no activity", false, "daily", "Chart not shown: no daily period in this range has any activity to plot."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := chartUnavailableNote(tt.rendered, tt.granularity); got != tt.want {
+				t.Errorf("chartUnavailableNote(%v, %q) = %q, want %q", tt.rendered, tt.granularity, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHTMLChartFollowsBreakdown is the end-to-end version: the chart in the
+// file plots the same granularity as the table beside it.
+func TestHTMLChartFollowsBreakdown(t *testing.T) {
+	dir := t.TempDir()
+
+	cases := []struct {
+		granularity string
+		wantTitle   string
+		wantTable   string
+		wantPoints  int
+	}{
+		{"monthly", "Net Lines by Month", "Monthly Breakdown", 3},
+		{"weekly", "Net Lines by Week", "Weekly Breakdown", 4},
+		{"daily", "Net Lines by Day", "Daily Breakdown", 5},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.granularity, func(t *testing.T) {
+			path := filepath.Join(dir, tt.granularity+".html")
+			err := HTMLWithOptions(sampleStats(), path, tt.granularity, "dark", metrics.Bundle{}, ChartOptions{Enabled: true})
+			if err != nil {
+				t.Fatalf("HTMLWithOptions: %v", err)
+			}
+			body := assertRenderedHTML(t, path)
+			assertWellFormedSVGString(t, body)
+
+			if !strings.Contains(body, tt.wantTitle) {
+				t.Errorf("chart title does not name the granularity, want %q", tt.wantTitle)
+			}
+			if !strings.Contains(body, tt.wantTable) {
+				t.Errorf("breakdown table heading %q is missing", tt.wantTable)
+			}
+			// One hover band per period means the chart has as many points as
+			// the table has rows.
+			if got := strings.Count(body, `class="gr-chart-hit"`); got != tt.wantPoints {
+				t.Errorf("chart plots %d periods, table has %d rows", got, tt.wantPoints)
+			}
+		})
+	}
+}
+
+func TestTeamHTMLChartFollowsBreakdown(t *testing.T) {
+	dir := t.TempDir()
+	for _, granularity := range []string{"monthly", "weekly", "daily"} {
+		t.Run(granularity, func(t *testing.T) {
+			path := filepath.Join(dir, granularity+".html")
+			err := TeamHTMLWithOptions(teamStatsFixture(), path, "dark", granularity, nil, ChartOptions{Enabled: true})
+			if err != nil {
+				t.Fatalf("TeamHTMLWithOptions: %v", err)
+			}
+			body := assertRenderedHTML(t, path)
+			assertWellFormedSVGString(t, body)
+
+			if !strings.Contains(body, chartGranularityTitle(granularity)) {
+				t.Errorf("chart title does not name %q", granularity)
+			}
+			if got := strings.Count(body, `class="gr-chart-line"`); got != 3 {
+				t.Errorf("drew %d lines, want one per member", got)
+			}
+		})
+	}
+}
+
 func TestHTMLHasNoChartByDefault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report.html")
 	if err := HTML(sampleStats(), path, "monthly", "dark", metrics.Bundle{}); err != nil {
@@ -285,7 +582,7 @@ func TestTeamHTMLWithOptionsHighlightTitlesTheComparison(t *testing.T) {
 	dir := t.TempDir()
 
 	matched := filepath.Join(dir, "highlight.html")
-	err := TeamHTMLWithOptions(teamStatsFixture(), matched, "dark", "", nil,
+	err := TeamHTMLWithOptions(teamStatsFixture(), matched, "dark", "monthly", nil,
 		ChartOptions{Enabled: true, Highlight: "ana@example.com"})
 	if err != nil {
 		t.Fatalf("TeamHTMLWithOptions: %v", err)
@@ -301,7 +598,7 @@ func TestTeamHTMLWithOptionsHighlightTitlesTheComparison(t *testing.T) {
 	// A highlight naming nobody falls back to every member, and the title
 	// must not claim a comparison the chart does not show.
 	missed := filepath.Join(dir, "no-highlight.html")
-	err = TeamHTMLWithOptions(teamStatsFixture(), missed, "dark", "", nil,
+	err = TeamHTMLWithOptions(teamStatsFixture(), missed, "dark", "monthly", nil,
 		ChartOptions{Enabled: true, Highlight: "ghost@example.com"})
 	if err != nil {
 		t.Fatalf("TeamHTMLWithOptions: %v", err)
