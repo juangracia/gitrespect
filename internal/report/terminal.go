@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/juangracia/gitrespect/internal/benchmark"
@@ -136,10 +137,25 @@ func Terminal(stats git.RepoStats, breakdown string, bundle metrics.Bundle) erro
 	return nil
 }
 
+// metricCoverage names how much of the analysed set a metric actually rests on,
+// but only when that is less than everything.
+//
+// Silence here is what made the old single-repo behaviour misleading: the
+// numbers looked like they described every repository. Saying "across 3 of 5
+// repositories" costs one clause and removes the false impression; saying it
+// when the answer is "all of them" would just be noise.
+func metricCoverage(covered, analysed int) string {
+	if analysed <= 1 || covered <= 0 || covered >= analysed {
+		return ""
+	}
+	return fmt.Sprintf(" %s(across %d of %d repositories)%s", colorDim, covered, analysed, colorReset)
+}
+
 func renderMetrics(b metrics.Bundle) {
 	if b.CommitSize != nil && b.CommitSize.Total > 0 {
 		d := b.CommitSize
-		fmt.Printf("  %sCommit size distribution:%s\n", colorDim, colorReset)
+		fmt.Printf("  %sCommit size distribution:%s%s\n", colorDim, colorReset,
+			metricCoverage(d.ReposCovered, b.ReposAnalyzed))
 		rows := []struct {
 			label  string
 			bucket metrics.SizeBucket
@@ -162,7 +178,8 @@ func renderMetrics(b metrics.Bundle) {
 	}
 	if b.Cadence != nil {
 		c := b.Cadence
-		fmt.Printf("  %sIntegration cadence:%s\n", colorDim, colorReset)
+		fmt.Printf("  %sIntegration cadence:%s%s\n", colorDim, colorReset,
+			metricCoverage(c.ReposCovered, b.ReposAnalyzed))
 		switch {
 		case c.MainBranch == "":
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
@@ -177,7 +194,8 @@ func renderMetrics(b metrics.Bundle) {
 	}
 	if b.LeadTime != nil {
 		lt := b.LeadTime
-		fmt.Printf("  %sLead time (branch → main):%s\n", colorDim, colorReset)
+		fmt.Printf("  %sLead time (branch → main):%s%s\n", colorDim, colorReset,
+			metricCoverage(lt.ReposCovered, b.ReposAnalyzed))
 		switch {
 		case lt.MainBranch == "":
 			fmt.Printf("  └── %sno main branch detected%s\n", colorDim, colorReset)
@@ -194,7 +212,8 @@ func renderMetrics(b metrics.Bundle) {
 	}
 	if b.Churn != nil {
 		c := b.Churn
-		fmt.Printf("  %sChurn rate:%s\n", colorDim, colorReset)
+		fmt.Printf("  %sChurn rate:%s%s\n", colorDim, colorReset,
+			metricCoverage(c.ReposCovered, b.ReposAnalyzed))
 		if c.AddedLines == 0 {
 			fmt.Printf("  └── %sno lines added in the %dd window before this period%s\n", colorDim, c.WindowDays, colorReset)
 		} else {
@@ -448,10 +467,25 @@ func printBreakdown(stats git.RepoStats, granularity string) {
 	width := labelWidth + 33
 
 	fmt.Printf("  %s%s:%s\n", colorDim, breakdownTitle(granularity), colorReset)
+	// Size the number columns from the widest value actually present. A fixed
+	// width silently broke the alignment of every row once a total reached
+	// seven figures, which is routine for a year of team output.
+	numWidth := 9
+	for _, r := range rows {
+		for _, v := range []int{r.Added, r.Deleted, r.Net} {
+			if n := len(formatNumber(v)); n > numWidth {
+				numWidth = n
+			}
+		}
+	}
+	width = labelWidth + 3*(numWidth+1) + 3
+
 	fmt.Println("  " + strings.Repeat("─", width))
-	fmt.Printf("  %s%-*s%s %sAdded%s     %sDeleted%s   %sNet%s\n",
+	fmt.Printf("  %s%-*s%s %s%-*s%s %s%-*s%s %sNet%s\n",
 		colorDim, labelWidth, "Period", colorReset,
-		colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
+		colorDim, numWidth, "Added", colorReset,
+		colorDim, numWidth, "Deleted", colorReset,
+		colorDim, colorReset)
 	fmt.Println("  " + strings.Repeat("─", width))
 
 	for _, r := range rows {
@@ -459,11 +493,11 @@ func printBreakdown(stats git.RepoStats, granularity string) {
 		if r.Net < 0 {
 			netColor = colorYellow
 		}
-		fmt.Printf("  %-*s %-9s %-9s %s%-9s%s\n",
+		fmt.Printf("  %-*s %-*s %-*s %s%-*s%s\n",
 			labelWidth, r.Label,
-			formatNumber(r.Added),
-			formatNumber(r.Deleted),
-			netColor, formatNumber(r.Net), colorReset)
+			numWidth, formatNumber(r.Added),
+			numWidth, formatNumber(r.Deleted),
+			netColor, numWidth, formatNumber(r.Net), colorReset)
 	}
 	fmt.Println()
 }
@@ -486,11 +520,23 @@ func formatNumber(n int) string {
 	return formatNumberAbs(n)
 }
 
+// formatNumberAbs groups n in thousands. It separates every group, not just
+// the last one: a year of team output is seven figures, and "1234,567" reads
+// as a typo.
 func formatNumberAbs(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
+	if n < 0 {
+		n = -n
 	}
-	return fmt.Sprintf("%d,%03d", n/1000, n%1000)
+	digits := strconv.Itoa(n)
+
+	var b strings.Builder
+	for i := 0; i < len(digits); i++ {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(digits[i])
+	}
+	return b.String()
 }
 
 func getMonthName(m int) string {

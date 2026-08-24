@@ -13,6 +13,44 @@ No agent, no sign-up, no instrumentation: gitrespect reads plain git history, so
 
 ![gitrespect report](screenshots/report-full.png)
 
+## Table of Contents
+
+- [Why gitrespect?](#why-gitrespect)
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Basic Analysis](#basic-analysis)
+  - [Measure AI Impact (Before/After Comparison)](#measure-ai-impact-beforeafter-comparison)
+    - [Team AI Adoption Audit](#team-ai-adoption-audit)
+    - [When Inside Each Period Did It Change?](#when-inside-each-period-did-it-change)
+  - [Team Analysis](#team-analysis)
+  - [Build the Team Automatically](#build-the-team-automatically)
+  - [Merging One Person's Multiple Addresses](#merging-one-persons-multiple-addresses)
+  - [Per-Repository Team Breakdown](#per-repository-team-breakdown)
+  - [Duplicate Repository Detection](#duplicate-repository-detection)
+  - [Analyze Specific Path](#analyze-specific-path)
+  - [Multiple Repositories](#multiple-repositories)
+  - [Scan Directory for Repos](#scan-directory-for-repos)
+  - [Filter by Year](#filter-by-year)
+  - [Breakdowns](#breakdowns)
+  - [Custom Date Range](#custom-date-range)
+  - [Filter by Author](#filter-by-author)
+  - [Export to HTML](#export-to-html)
+  - [HTML Theme Options](#html-theme-options)
+  - [Opt-in Metrics](#opt-in-metrics)
+  - [Export to JSON](#export-to-json)
+  - [Team HTML Report](#team-html-report)
+  - [Trend Chart](#trend-chart)
+- [Merge Requests and Pull Requests](#merge-requests-and-pull-requests)
+- [All Options](#all-options)
+- [Personal Baseline](#personal-baseline)
+- [For AI Agents](#for-ai-agents)
+- [How It Works](#how-it-works)
+- [Use Cases](#use-cases)
+- [Contributing](#contributing)
+- [Author](#author)
+- [License](#license)
+
 ## Why gitrespect?
 
 **Measure AI Impact on Productivity**
@@ -29,10 +67,13 @@ The rise of AI coding assistants (Copilot, Claude, Cursor) is changing how we wr
 - **AI Productivity Comparison** - Measure before/after impact of AI tools on your workflow
 - **Personal Baseline** - Compare this period against your own normal output (no arbitrary industry numbers)
 - **Flow & Quality Metrics** (opt-in) - Commit size distribution, integration cadence, lead time (branch → main), and churn
-- **Team Analysis** - Analyze multiple contributors as a team or organization
+- **Team Analysis** - Analyze multiple contributors as a team or organization, with a per-repository rollup
+- **Automatic Team Discovery** - `--top N` ranks real contributors and filters out CI and bot accounts
+- **Identity Merging** - One person, many email addresses, counted once, via `.mailmap` or a roster
+- **Merge Request / Pull Request Metrics** - GitLab and GitHub MR volume and true open-to-merge lead time
 - **Lines of Code** - Track added, deleted, and net lines across repositories
-- **Multi-repo Support** - Analyze multiple repositories at once
-- **Multiple Output Formats** - Terminal, HTML reports (dark/light themes), JSON export
+- **Multi-repo Support** - Analyze many repositories at once, with duplicate clones detected and skipped
+- **Multiple Output Formats** - Terminal, HTML reports (dark/light themes, optional trend chart), JSON export
 - **AI Agent Skill** - Bundled [skill](.claude/skills/gitrespect/SKILL.md) so Claude Code / Codex can run gitrespect for you
 
 ## Installation
@@ -185,6 +226,25 @@ gitrespect compare --team=dev1@company.com,dev2@company.com,dev3@company.com \
 Members with no output in the "before" period report `n/a` rather than a
 meaningless ratio.
 
+#### When Inside Each Period Did It Change?
+
+`compare` takes `-b/--breakdown` to show the shape of each period, not just its
+total:
+
+```bash
+gitrespect compare --before=2025-01:2025-06 --after=2025-07:2025-12 -b monthly
+```
+
+The two periods are broken down **separately**, under their own headings. They
+can be different lengths and need not be adjacent, so a single spanning series
+would either invent empty buckets for the gap or imply the periods are
+contiguous when they are not.
+
+`compare` also accepts `--all-authors` to compare a whole repository or
+organisation without listing every contributor, `-r` to scan recursively, and
+`--roster`/`--alias` to merge split identities the same way the main command
+does.
+
 ### Team Analysis
 
 Analyze contributions across your entire team:
@@ -223,6 +283,97 @@ table. This works in terminal, HTML, and JSON:
 gitrespect repo1 repo2 --team=dev1@company.com,dev2@company.com \
   --year=2025 --breakdown=monthly --metrics=all --output=html --file=team.html
 ```
+
+### Build the Team Automatically
+
+Assembling a `--team` list by hand means running `git log` across every repo,
+counting addresses and eyeballing the result to strip CI. `--top` does that:
+
+```bash
+gitrespect -r ~/projects --top 10 --year=2025
+```
+
+It ranks contributors by commit count across every scanned repo and filters
+automation (GitLab project and group access tokens, `semantic-release-bot`,
+`dependabot`, `renovate`, GitHub `[bot]` accounts). Excluded identities are
+named on stderr, because the filter matches substrings and a human whose name
+contains one of them would otherwise vanish without explanation. Add your own
+patterns with `--exclude-authors`, or name people directly with `--team`, which
+skips discovery entirely.
+
+### Merging One Person's Multiple Addresses
+
+Real contributors commit under several addresses: a corporate one, a personal
+one, and per-machine addresses an unconfigured git invents from the hostname.
+Counting each separately undercuts that person by whatever share of their work
+landed under the others.
+
+If a repository has a `.mailmap`, this is already handled (see the note under
+[All Options](#all-options)). For everything else, use a roster:
+
+```bash
+gitrespect -r ~/projects --roster team.yaml --top 10 --year=2025
+```
+
+```yaml
+# team.yaml - one person per line, canonical name then every address they use
+Wesley Ornellas: wesley.ornellas@corp.com, wesleyornellas@MacBook---Wesley.local
+Juan Gracia: juan.gracia@corp.com, juanmgracia@gmail.com
+```
+
+A JSON roster (`{"Wesley Ornellas": ["a@x.com", "b@x.com"]}`) works too. For a
+one-off, skip the file entirely:
+
+```bash
+gitrespect --alias "Wesley Ornellas=wesley.ornellas@corp.com,wesleyornellas@MacBook---Wesley.local" ...
+```
+
+Reports are then labelled with the canonical name rather than whichever address
+came first, and `--top` ranks people rather than addresses. Listing one address
+under two people is rejected, since that would double-count them in a team
+total.
+
+### Per-Repository Team Breakdown
+
+`--per-repo` works in team mode, reporting one row per repository with every
+member's work folded in:
+
+```bash
+gitrespect -r ~/projects --top 10 --year=2025 --per-repo
+```
+
+```
+  By Repository (3)
+  Repository            Net        Commits  People
+  ──────────────────────────────────────────────────
+  tag-api-helm          11         11       1
+  billing-service       6          6        1
+  scratch-notes         1          1        1
+```
+
+One aggregated table rather than one table per member, which stops being
+readable past a handful of repos. Per-contributor attribution for each
+repository is available in `--output json`.
+
+### Duplicate Repository Detection
+
+A recursive scan over a working machine routinely finds the same project twice:
+an old flat clone next to a newer nested layout. Both carry the full history, so
+counting both inflates the total with nothing in the report to suggest anything
+is wrong.
+
+Repositories are grouped by their `origin` remote and duplicates skipped, with
+the skip announced:
+
+```
+Warning: 1 duplicate repo found and skipped (same remote gitlab.com/acme/tag-api-helm): /projects/tag-api-helm
+         counting /projects/tag-api-group/tag-api-helm
+```
+
+HTTPS, SSH, credential-bearing and ported URLs for the same project all collapse
+to one identity. The most recently committed checkout is kept, ties break
+alphabetically. A repository with no readable remote is always kept, since
+dropping an unidentified repo would understate the report.
 
 ### Analyze Specific Path
 
@@ -354,6 +505,94 @@ gitrespect --output=json --file=stats.json
 gitrespect --team=dev1@example.com,dev2@example.com --output=html --file=team-report.html
 ```
 
+### Trend Chart
+
+The HTML report can plot the breakdown it already computes as a line chart:
+
+```bash
+gitrespect -r ~/projects --top 10 --year=2025 -b monthly \
+  -o html --chart -f team.html
+```
+
+One line per member, or add `--highlight` for the "you versus the team average"
+view, which draws that person against a derived average of everyone else:
+
+```bash
+gitrespect -r ~/projects --top 10 --year=2025 -b monthly \
+  -o html --chart --highlight "Wesley Ornellas" -f team.html
+```
+
+The chart plots whatever granularity `--breakdown` names, monthly, weekly or
+daily, and is built from the same rows as the table beside it, so the two cannot
+disagree. Its title names the granularity, so a screenshot is self-describing.
+
+It is inline SVG in the same self-contained file, with no external requests, and
+its palette is checked for colour-vision-deficiency safety and contrast in both
+the light and dark themes. `--chart` needs `--breakdown` to say what a point
+covers, and only applies to `--output html`; when a chart cannot be drawn the
+report says why rather than silently omitting it.
+
+## Merge Requests and Pull Requests
+
+Local git history cannot answer "how many MRs did this person open per month
+versus the team", because a merge request lives on the review platform, not in
+the object database. The `prs` subcommand asks the platform directly and shapes
+the answer like the git-based reports:
+
+```bash
+# GitLab, group-scoped: one query covers every project under the group
+gitrespect prs --provider gitlab --group my-group/web --year=2025 -b monthly
+
+# GitHub
+gitrespect prs --provider github --org my-org -a me@example.com --year=2025
+```
+
+```
+  Opened      Merged      Merge rate  Lead time
+  ──────────────────────────────────────────────────
+  14          14          100%        1.0d median
+
+  Contributors
+  Contributor Opened   Merged   /month
+  ─────────────────────────────────────
+  wornellas   8        8        0.7
+  jgracia     6        6        0.5
+```
+
+Because merge timestamps are real, lead time here is measured from MR opened to
+MR merged, which is a cleaner DORA-style signal than the commit-graph heuristic
+`--metrics=lead-time` uses on local history.
+
+**Authentication**, tried in this order:
+
+1. `--token`, or the `GITLAB_TOKEN` / `GITHUB_TOKEN` environment variable.
+2. The locally authenticated `glab` or `gh` CLI, which needs no token at all.
+
+Prefer the environment variable: a token passed as `--token` is visible to
+anyone who can list processes.
+
+**Before/after on MR volume.** `compare` takes `--data=prs`, giving the same Nx
+multiplier for merge request volume that it already gives for lines of code:
+
+```bash
+gitrespect compare --data=prs --group my-group/web \
+  --before=2025-01:2025-06 --after=2025-07:2025-12
+```
+
+```
+  Period          Opened   Merged   /month
+  ─────────────────────────────────────────
+  2025-01:2025-06 5        5        0.8
+  2025-07:2025-12 9        9        1.5
+
+  Change: +1.8x per month  (volume 5 → 9, +1.8x)
+```
+
+Platform accounts are matched to people by email where the API exposes one, and
+otherwise by username and display name. When an account cannot be matched to a
+requested identity it is reported rather than silently dropped. Use `--map
+you@corp.com=handle` to pin an account explicitly.
+
 ## All Options
 
 ```
@@ -362,8 +601,15 @@ gitrespect [paths...] [flags]
 Flags:
   -a, --author string        Filter by author email (default: git config user.email)
   -t, --team strings         Team mode: analyze multiple authors (comma-separated emails)
+      --all-authors          Analyze every author's commits, unfiltered
+      --top int              Auto-discover the top N contributors and run team mode on them
+      --exclude-authors str  Extra regexes excluded from --top, on top of the bot filter
+      --roster string        Roster file mapping a canonical name to a person's addresses
+      --alias stringArray    Inline identity: 'Name=a@x.com,b@x.com' (repeatable)
   -r, --recursive            Scan subdirectories for git repositories
-      --per-repo             Show breakdown by repository when analyzing multiple repos
+      --per-repo             Show breakdown by repository (works in team mode too)
+      --chart                Include a trend chart in the HTML report (needs --breakdown)
+      --highlight string     In team mode, emphasise one member against the team average
   -s, --since string         Start date (YYYY-MM-DD or "30 days ago") (default: "30 days ago")
   -u, --until string         End date (default: now)
       --year int             Filter by year (e.g., --year=2025)
@@ -379,9 +625,15 @@ Flags:
   -h, --help                 Show help
 
 Commands:
-  gitrespect compare       Compare two time periods (add --team for a group)
+  gitrespect compare       Compare two time periods (add --team for a group,
+                           -b for a per-period breakdown, --data=prs for MR volume)
+  gitrespect prs           Merge request / pull request activity from GitLab or GitHub
   gitrespect version       Show version info
 ```
+
+`--author`, `--team`, `--all-authors` and `--top` each answer "whose commits am
+I counting", so exactly one of them may be given. Passing two is an error rather
+than a silent winner.
 
 Dates accept `YYYY-MM-DD`, `YYYY-MM`, `YYYY`, or relative forms like
 `"30 days ago"`. `--until` is inclusive: `--until=2025-03-05` covers all of
@@ -391,6 +643,31 @@ Author matching is case-insensitive, and a full address is matched exactly, so
 `-a jo@corp.com` will not also pick up `bojo@corp.com`. A bare name fragment
 like `-a alice` still matches loosely. `--author` and `--team` are mutually
 exclusive.
+
+Author matching also resolves through `.mailmap`, because git's `log.mailmap`
+setting defaults to on and gitrespect inherits it. If a repository carries a
+`.mailmap` unifying `alice@personal.example` into `alice@corp.com`, then
+`-a alice@corp.com` returns the commits made under both addresses. That is
+almost always what you want. The catch is that the result then depends on each
+repository's `.mailmap`, so with `-r` across many repos the same person can be
+counted differently per repo depending on which of them happens to carry an
+entry. Use `--roster` or `--alias` when you need the same identities applied
+uniformly across every repository regardless of what each one ships.
+
+There is one trap worth knowing. A `.mailmap` maps addresses *away* as well as
+together, so asking for someone's **old** address in a repo whose mailmap
+rewrites it returns **zero commits**, not their work:
+
+```
+.mailmap:  Alice <alice@corp.com> <alice@personal.example>
+
+-a alice@corp.com          -> all 3 of Alice's commits
+-a alice@personal.example  -> 0 commits
+```
+
+A confident zero is indistinguishable from "did no work", so if a contributor
+you know is active reports nothing, check the repo's `.mailmap` and use their
+canonical address. `git shortlog -sne` prints the mapped identities.
 
 `--exclude` patterns are matched against renamed files on both their old and
 their new path, so `-e 'vendor/*'` still excludes a file that was moved into or

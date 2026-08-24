@@ -1,14 +1,9 @@
 package metrics
 
 import (
-	"fmt"
 	"os/exec"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
-
-	"github.com/juangracia/gitrespect/internal/git"
 )
 
 // detectMainBranch returns "main", "master", or the resolved origin HEAD name.
@@ -36,6 +31,23 @@ func branchExists(repoPath, name string) bool {
 	return cmd.Run() == nil
 }
 
+// isReadableRepo reports whether git can resolve path as a repository.
+//
+// The branch-based metrics need to tell "a repo we read, which has no
+// main-like branch" apart from "not a repo at all". The first is a finding to
+// report, the second is a failure that must not be counted as coverage, and
+// detectMainBranch answers the empty string to both.
+//
+// This asks git rather than looking for a .git directory, because in a worktree
+// .git is a file and an on-disk check would reject a perfectly readable repo.
+func isReadableRepo(repoPath string) bool {
+	return exec.Command("git", "-C", repoPath, "rev-parse", "--git-dir").Run() == nil
+}
+
+// median is where pooled samples land. Every multi-repo metric concatenates the
+// raw samples from each repository and calls this once. Taking each repo's
+// median and averaging those would weight a repo with three commits the same as
+// one with three hundred, and the result would not be a median of anything.
 func median(xs []float64) float64 {
 	if len(xs) == 0 {
 		return 0
@@ -47,47 +59,4 @@ func median(xs []float64) float64 {
 		return sorted[n/2]
 	}
 	return (sorted[n/2-1] + sorted[n/2]) / 2
-}
-
-// sumNumstat returns (totalAdded, totalDeleted) for the author's commits in the window,
-// excluding binary files and excluded patterns.
-func sumNumstat(repoPath, author string, since, until time.Time, exclude []string) (int, int, error) {
-	args := git.LogArgs(repoPath)
-	args = append(args, git.AuthorArgs(author)...)
-	args = append(args,
-		"--since="+git.TimeArg(since),
-		"--until="+git.TimeArg(until),
-		"--pretty=format:",
-		"--numstat",
-	)
-	out, err := exec.Command("git", args...).Output()
-	if err != nil {
-		return 0, 0, fmt.Errorf("git log: %w", err)
-	}
-	totalAdded, totalDeleted := 0, 0
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		if fields[0] == "-" || fields[1] == "-" {
-			continue
-		}
-		filename := strings.Join(fields[2:], " ")
-		if git.ShouldExclude(filename, exclude) {
-			continue
-		}
-		a, err1 := strconv.Atoi(fields[0])
-		d, err2 := strconv.Atoi(fields[1])
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		totalAdded += a
-		totalDeleted += d
-	}
-	return totalAdded, totalDeleted, nil
 }

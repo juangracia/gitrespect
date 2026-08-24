@@ -112,6 +112,10 @@ type PeriodStats struct {
 	Net         int     `json:"net"`
 	WorkingDays int     `json:"working_days"`
 	PerDay      float64 `json:"per_day"`
+	// Breakdown is the within-period trend, present only when --breakdown asked
+	// for one. The two periods are broken down separately because they can
+	// differ in length and need not be adjacent.
+	Breakdown *BreakdownJSON `json:"breakdown,omitempty"`
 }
 
 type TeamCompareJSONReport struct {
@@ -208,10 +212,11 @@ func JSON(stats git.RepoStats, filename string, breakdown string, bundle metrics
 }
 
 type TeamJSONReport struct {
-	Period  PeriodInfo         `json:"period"`
-	Totals  TeamTotals         `json:"totals"`
-	Members []MemberStats      `json:"members"`
-	Monthly []MonthlyJSONStats `json:"monthly,omitempty"`
+	Period       PeriodInfo         `json:"period"`
+	Totals       TeamTotals         `json:"totals"`
+	Members      []MemberStats      `json:"members"`
+	Repositories []RepoRollupJSON   `json:"repositories,omitempty"`
+	Monthly      []MonthlyJSONStats `json:"monthly,omitempty"`
 }
 
 type TeamTotals struct {
@@ -232,7 +237,15 @@ type MemberStats struct {
 	Metrics *MetricsPayload `json:"metrics,omitempty"`
 }
 
+// TeamJSON writes a team report without per-repository detail. See
+// TeamJSONWithRepos, which it delegates to, for the --per-repo form.
 func TeamJSON(stats git.TeamStats, filename string, breakdown string, bundles map[string]metrics.Bundle) error {
+	return TeamJSONWithRepos(stats, filename, breakdown, bundles, nil)
+}
+
+// TeamJSONWithRepos writes a team report, optionally including a per-repository
+// rollup. Passing nil rollups produces exactly the output TeamJSON always did.
+func TeamJSONWithRepos(stats git.TeamStats, filename string, breakdown string, bundles map[string]metrics.Bundle, rollups []git.RepoRollup) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 
 	report := TeamJSONReport{
@@ -285,6 +298,8 @@ func TeamJSON(stats git.TeamStats, filename string, breakdown string, bundles ma
 		report.Members = append(report.Members, ms)
 	}
 
+	report.Repositories = buildRepoRollupJSON(rollups, workingDays)
+
 	// Team-wide monthly breakdown
 	if breakdown == "monthly" && len(stats.Monthly) > 0 {
 		var months []string
@@ -324,7 +339,15 @@ func TeamJSON(stats git.TeamStats, filename string, breakdown string, bundles ma
 }
 
 // TeamCompareJSON writes a before/after comparison for a whole team.
+// TeamCompareJSON writes a team period comparison without a within-period
+// breakdown.
 func TeamCompareJSON(c git.TeamCompareStats, filename string) error {
+	return TeamCompareJSONWithBreakdown(c, filename, "")
+}
+
+// TeamCompareJSONWithBreakdown writes a team period comparison, optionally
+// including each period's team-wide trend.
+func TeamCompareJSONWithBreakdown(c git.TeamCompareStats, filename string, granularity string) error {
 	beforeDays := git.WorkingDays(c.Before.Since, c.Before.Until)
 	afterDays := git.WorkingDays(c.After.Since, c.After.Until)
 
@@ -348,6 +371,10 @@ func TeamCompareJSON(c git.TeamCompareStats, filename string) error {
 		Multiplier: multiplier,
 		Change:     fmt.Sprintf("%.1fx productivity change", multiplier),
 		Members:    []MemberCompareJSONReport{},
+	}
+	if granularity != "" {
+		report.Before.Breakdown = buildBreakdown(teamAsRepoStats(c.Before), granularity)
+		report.After.Breakdown = buildBreakdown(teamAsRepoStats(c.After), granularity)
 	}
 
 	for _, email := range c.MemberEmails() {
@@ -388,7 +415,14 @@ func writeJSON(v any, filename string) error {
 	return nil
 }
 
+// CompareJSON writes a period comparison without a within-period breakdown.
 func CompareJSON(comparison git.CompareStats, filename string) error {
+	return CompareJSONWithBreakdown(comparison, filename, "")
+}
+
+// CompareJSONWithBreakdown writes a period comparison, optionally including each
+// period's trend. An empty granularity reproduces CompareJSON exactly.
+func CompareJSONWithBreakdown(comparison git.CompareStats, filename string, granularity string) error {
 	beforeDays := git.WorkingDays(comparison.Before.Since, comparison.Before.Until)
 	afterDays := git.WorkingDays(comparison.After.Since, comparison.After.Until)
 
@@ -412,6 +446,10 @@ func CompareJSON(comparison git.CompareStats, filename string) error {
 		},
 		Multiplier: multiplier,
 		Change:     fmt.Sprintf("%.1fx productivity change", multiplier),
+	}
+	if granularity != "" {
+		report.Before.Breakdown = buildBreakdown(comparison.Before, granularity)
+		report.After.Breakdown = buildBreakdown(comparison.After, granularity)
 	}
 
 	data, err := json.MarshalIndent(report, "", "  ")

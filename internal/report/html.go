@@ -24,13 +24,19 @@ type HTMLData struct {
 	Monthly        []MonthlyHTMLData
 	HasMonthly     bool
 	BreakdownTitle string
-	Theme          string
-	IsDark         bool
-	Baseline       *BaselineHTMLData
-	CommitSize     *CommitSizeHTMLData
-	Cadence        *CadenceHTMLData
-	LeadTime       *LeadTimeHTMLData
-	Churn          *ChurnHTMLData
+	// Chart is the inline SVG trend chart, empty unless one was requested.
+	HasChart bool
+	Chart    template.HTML
+	// ChartNote replaces the chart when one was asked for but cannot be
+	// drawn, so the omission is explained rather than silent.
+	ChartNote  string
+	Theme      string
+	IsDark     bool
+	Baseline   *BaselineHTMLData
+	CommitSize *CommitSizeHTMLData
+	Cadence    *CadenceHTMLData
+	LeadTime   *LeadTimeHTMLData
+	Churn      *ChurnHTMLData
 }
 
 type BaselineHTMLData struct {
@@ -98,6 +104,29 @@ func buildBreakdownHTML(stats git.RepoStats, granularity string) []MonthlyHTMLDa
 		})
 	}
 	return out
+}
+
+// reportFuncs are the helpers the HTML templates call.
+//
+// Grouping is done through a template function rather than a Formatted* field
+// beside every count, so a count and its rendered form cannot drift apart and
+// a field added later cannot quietly ship ungrouped.
+var reportFuncs = template.FuncMap{
+	"num":  formatNumber,
+	"rate": formatRoundedNumber,
+}
+
+// chartUnavailableNote explains, in the report itself, why a requested chart
+// is missing. Silently dropping the section leaves the reader assuming the
+// tool decided there was nothing worth showing.
+func chartUnavailableNote(rendered bool, granularity string) string {
+	if rendered {
+		return ""
+	}
+	if !git.ValidGranularity(granularity) {
+		return "Chart not shown: a trend chart needs --breakdown to say what a point covers."
+	}
+	return "Chart not shown: no " + granularity + " period in this range has any activity to plot."
 }
 
 // breakdownHTMLTitle names the breakdown section for the requested granularity.
@@ -275,6 +304,11 @@ const htmlTemplate = `<!DOCTYPE html>
             letter-spacing: 0.5px;
         }
 
+        .chart-note {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
         .daily-stat {
             font-size: 32px;
             font-weight: 600;
@@ -417,19 +451,19 @@ const htmlTemplate = `<!DOCTYPE html>
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-label">Added</div>
-                <div class="stat-value added">+{{.Added}}</div>
+                <div class="stat-value added">+{{num .Added}}</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Deleted</div>
-                <div class="stat-value deleted">-{{.Deleted}}</div>
+                <div class="stat-value deleted">-{{num .Deleted}}</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Net</div>
-                <div class="stat-value net">{{.Net}}</div>
+                <div class="stat-value net">{{num .Net}}</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Commits</div>
-                <div class="stat-value">{{.Commits}}</div>
+                <div class="stat-value">{{num .Commits}}</div>
             </div>
         </div>
 
@@ -510,10 +544,15 @@ const htmlTemplate = `<!DOCTYPE html>
 
         <div class="section">
             <div class="section-title">Daily Output</div>
-            <div class="daily-stat">{{printf "%.0f" .PerDay}}</div>
+            <div class="daily-stat">{{rate .PerDay}}</div>
             <div class="daily-label">lines/day ({{.WorkingDays}} working days)</div>
         </div>
 
+        {{if .HasChart}}
+        <div class="section">{{.Chart}}</div>
+        {{else if .ChartNote}}
+        <div class="section"><div class="chart-note">{{.ChartNote}}</div></div>
+        {{end}}
 
         {{if .HasMonthly}}
         <div class="section">
@@ -531,9 +570,9 @@ const htmlTemplate = `<!DOCTYPE html>
                     {{range .Monthly}}
                     <tr{{if .IsMax}} class="max-row"{{end}}>
                         <td>{{.Label}}</td>
-                        <td>+{{.Added}}</td>
-                        <td>-{{.Deleted}}</td>
-                        <td>{{.Net}}</td>
+                        <td>+{{num .Added}}</td>
+                        <td>-{{num .Deleted}}</td>
+                        <td>{{num .Net}}</td>
                     </tr>
                     {{end}}
                 </tbody>
@@ -713,13 +752,13 @@ const compareHtmlTemplate = `<!DOCTYPE html>
         <div class="comparison">
             <div class="period-card">
                 <div class="period-label">{{.BeforeLabel}}</div>
-                <div class="period-value">{{.BeforeNet}}</div>
-                <div class="period-perday">{{printf "%.0f" .BeforePerDay}} lines/day</div>
+                <div class="period-value">{{num .BeforeNet}}</div>
+                <div class="period-perday">{{rate .BeforePerDay}} lines/day</div>
             </div>
             <div class="period-card">
                 <div class="period-label">{{.AfterLabel}}</div>
-                <div class="period-value after">{{.AfterNet}}</div>
-                <div class="period-perday">{{printf "%.0f" .AfterPerDay}} lines/day</div>
+                <div class="period-value after">{{num .AfterNet}}</div>
+                <div class="period-perday">{{rate .AfterPerDay}} lines/day</div>
             </div>
         </div>
 
@@ -737,8 +776,8 @@ const compareHtmlTemplate = `<!DOCTYPE html>
                 {{range .Members}}
                 <tr>
                     <td>{{.Email}}</td>
-                    <td>{{.BeforeNet}}</td>
-                    <td>{{.AfterNet}}</td>
+                    <td>{{num .BeforeNet}}</td>
+                    <td>{{num .AfterNet}}</td>
                     <td>{{if .HasBaseline}}{{printf "%.1f" .Multiplier}}x{{else}}n/a{{end}}</td>
                 </tr>
                 {{end}}
@@ -753,7 +792,14 @@ const compareHtmlTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+// HTML renders the single-author report without a trend chart.
 func HTML(stats git.RepoStats, filename string, breakdown string, theme string, bundle metrics.Bundle) error {
+	return HTMLWithOptions(stats, filename, breakdown, theme, bundle, ChartOptions{})
+}
+
+// HTMLWithOptions renders the single-author report, adding the inline SVG
+// trend chart when chart.Enabled is set.
+func HTMLWithOptions(stats git.RepoStats, filename string, breakdown string, theme string, bundle metrics.Bundle, chart ChartOptions) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 	locPerDay := float64(stats.Net) / float64(workingDays)
 
@@ -816,7 +862,20 @@ func HTML(stats git.RepoStats, filename string, breakdown string, theme string, 
 	data.HasMonthly = len(data.Monthly) > 0
 	data.BreakdownTitle = breakdownHTMLTitle(breakdown)
 
-	tmpl, err := template.New("report").Parse(htmlTemplate)
+	if chart.Enabled {
+		label := stats.Author
+		if label == "" {
+			label = "Net lines"
+		}
+		data.Chart = RenderChart(
+			[]ChartSeries{BreakdownSeries(stats, breakdown, label)},
+			ChartRenderOptions{Title: chartGranularityTitle(breakdown), IsDark: isDark},
+		)
+		data.HasChart = data.Chart != ""
+		data.ChartNote = chartUnavailableNote(data.HasChart, breakdown)
+	}
+
+	tmpl, err := template.New("report").Funcs(reportFuncs).Parse(htmlTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)
 	}
@@ -902,7 +961,7 @@ func changeEmoji(multiplier float64) string {
 
 // renderCompareHTML writes the shared comparison template to filename.
 func renderCompareHTML(data CompareHTMLData, filename string) error {
-	tmpl, err := template.New("compare").Parse(compareHtmlTemplate)
+	tmpl, err := template.New("compare").Funcs(reportFuncs).Parse(compareHtmlTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)
 	}
@@ -965,8 +1024,14 @@ type TeamHTMLData struct {
 	Monthly          []MonthlyHTMLData
 	BreakdownTitle   string
 	HasMemberMetrics bool
-	Theme            string
-	IsDark           bool
+	// Chart is the inline SVG trend chart, empty unless one was requested.
+	HasChart bool
+	Chart    template.HTML
+	// ChartNote replaces the chart when one was asked for but cannot be
+	// drawn, so the omission is explained rather than silent.
+	ChartNote string
+	Theme     string
+	IsDark    bool
 }
 
 type TeamMemberHTMLData struct {
@@ -1046,6 +1111,7 @@ const teamHtmlTemplate = `<!DOCTYPE html>
 
         .section { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 20px; margin-bottom: 24px; }
         .section-title { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .chart-note { font-size: 14px; color: var(--text-secondary); }
         .daily-stat { font-size: 32px; font-weight: 600; color: var(--accent); font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace; }
         .daily-label { color: var(--text-secondary); font-size: 14px; }
 
@@ -1086,15 +1152,15 @@ const teamHtmlTemplate = `<!DOCTYPE html>
         </header>
 
         <div class="stats-grid">
-            <div class="stat-card"><div class="stat-label">Team Added</div><div class="stat-value added">+{{.TotalAdded}}</div></div>
-            <div class="stat-card"><div class="stat-label">Team Deleted</div><div class="stat-value deleted">-{{.TotalDeleted}}</div></div>
-            <div class="stat-card"><div class="stat-label">Team Net</div><div class="stat-value net">{{.TotalNet}}</div></div>
-            <div class="stat-card"><div class="stat-label">Team Commits</div><div class="stat-value">{{.TotalCommits}}</div></div>
+            <div class="stat-card"><div class="stat-label">Team Added</div><div class="stat-value added">+{{num .TotalAdded}}</div></div>
+            <div class="stat-card"><div class="stat-label">Team Deleted</div><div class="stat-value deleted">-{{num .TotalDeleted}}</div></div>
+            <div class="stat-card"><div class="stat-label">Team Net</div><div class="stat-value net">{{num .TotalNet}}</div></div>
+            <div class="stat-card"><div class="stat-label">Team Commits</div><div class="stat-value">{{num .TotalCommits}}</div></div>
         </div>
 
         <div class="section">
             <div class="section-title">Team Daily Output</div>
-            <div class="daily-stat">{{printf "%.0f" .PerDay}}</div>
+            <div class="daily-stat">{{rate .PerDay}}</div>
             <div class="daily-label">lines/day ({{.WorkingDays}} working days)</div>
         </div>
 
@@ -1104,7 +1170,7 @@ const teamHtmlTemplate = `<!DOCTYPE html>
                 <thead><tr><th>Contributor</th><th>Added</th><th>Deleted</th><th>Net</th><th>Commits</th><th>/Day</th></tr></thead>
                 <tbody>
                     {{range .Members}}
-                    <tr{{if .IsTop}} class="top-row"{{end}}><td>{{.Email}}</td><td>+{{.Added}}</td><td>-{{.Deleted}}</td><td>{{.Net}}</td><td>{{.Commits}}</td><td>{{printf "%.0f" .PerDay}}</td></tr>
+                    <tr{{if .IsTop}} class="top-row"{{end}}><td>{{.Email}}</td><td>+{{num .Added}}</td><td>-{{num .Deleted}}</td><td>{{num .Net}}</td><td>{{num .Commits}}</td><td>{{rate .PerDay}}</td></tr>
                     {{end}}
                 </tbody>
             </table>
@@ -1136,6 +1202,12 @@ const teamHtmlTemplate = `<!DOCTYPE html>
         </div>
         {{end}}
 
+        {{if .HasChart}}
+        <div class="section">{{.Chart}}</div>
+        {{else if .ChartNote}}
+        <div class="section"><div class="chart-note">{{.ChartNote}}</div></div>
+        {{end}}
+
         {{if .HasMonthly}}
         <div class="section">
             <div class="section-title">{{.BreakdownTitle}}</div>
@@ -1143,7 +1215,7 @@ const teamHtmlTemplate = `<!DOCTYPE html>
                 <thead><tr><th>Period</th><th>Added</th><th>Deleted</th><th>Net</th></tr></thead>
                 <tbody>
                     {{range .Monthly}}
-                    <tr{{if .IsMax}} class="top-row"{{end}}><td>{{.Label}}</td><td>+{{.Added}}</td><td>-{{.Deleted}}</td><td>{{.Net}}</td></tr>
+                    <tr{{if .IsMax}} class="top-row"{{end}}><td>{{.Label}}</td><td>+{{num .Added}}</td><td>-{{num .Deleted}}</td><td>{{num .Net}}</td></tr>
                     {{end}}
                 </tbody>
             </table>
@@ -1155,7 +1227,15 @@ const teamHtmlTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+// TeamHTML renders the team report without a trend chart.
 func TeamHTML(stats git.TeamStats, filename string, theme string, breakdown string, bundles map[string]metrics.Bundle) error {
+	return TeamHTMLWithOptions(stats, filename, theme, breakdown, bundles, ChartOptions{})
+}
+
+// TeamHTMLWithOptions renders the team report, adding the inline SVG trend
+// chart when chart.Enabled is set. With chart.Highlight naming a member, the
+// chart becomes that member's line against a derived team average.
+func TeamHTMLWithOptions(stats git.TeamStats, filename string, theme string, breakdown string, bundles map[string]metrics.Bundle, chart ChartOptions) error {
 	workingDays := git.WorkingDays(stats.Since, stats.Until)
 
 	isDark := theme != "light"
@@ -1228,7 +1308,21 @@ func TeamHTML(stats git.TeamStats, filename string, theme string, breakdown stri
 	data.HasMonthly = len(data.Monthly) > 0
 	data.BreakdownTitle = "Team " + breakdownHTMLTitle(breakdown)
 
-	tmpl, err := template.New("team").Parse(teamHtmlTemplate)
+	if chart.Enabled {
+		series := TeamBreakdownSeries(stats, breakdown, chart)
+		// Name the chart after what was actually built: a Highlight that
+		// matches nobody falls back to one line per member, and the title
+		// must not claim a comparison the chart does not show.
+		title := chartGranularityTitle(breakdown)
+		if len(series) == 2 && series[1].Dashed {
+			title = fmt.Sprintf("%s: %s vs %s", title, series[0].Label, series[1].Label)
+		}
+		data.Chart = RenderChart(series, ChartRenderOptions{Title: title, IsDark: isDark})
+		data.HasChart = data.Chart != ""
+		data.ChartNote = chartUnavailableNote(data.HasChart, breakdown)
+	}
+
+	tmpl, err := template.New("team").Funcs(reportFuncs).Parse(teamHtmlTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)
 	}

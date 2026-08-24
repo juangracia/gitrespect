@@ -1,13 +1,7 @@
 package metrics
 
 import (
-	"fmt"
-	"os/exec"
-	"strconv"
-	"strings"
 	"time"
-
-	"github.com/juangracia/gitrespect/internal/git"
 )
 
 // SizeBucket categorizes a commit by total lines changed.
@@ -24,6 +18,10 @@ const (
 type CommitSizeDistribution struct {
 	Counts [4]int `json:"counts"`
 	Total  int    `json:"total"`
+	// ReposCovered is how many repositories' histories went into these counts.
+	// The report needs it to avoid presenting one repo's habits as if they
+	// described every repo in the run.
+	ReposCovered int `json:"repos_covered,omitempty"`
 }
 
 // Percent returns the percentage of commits in bucket b. Returns 0 if Total is 0.
@@ -34,79 +32,70 @@ func (d CommitSizeDistribution) Percent(b SizeBucket) float64 {
 	return float64(d.Counts[b]) * 100 / float64(d.Total)
 }
 
+// bucketFor places a commit by its total lines changed.
+func bucketFor(total int) SizeBucket {
+	switch {
+	case total < 10:
+		return BucketMicro
+	case total < 100:
+		return BucketSmall
+	case total < 500:
+		return BucketMedium
+	default:
+		return BucketLarge
+	}
+}
+
 // ComputeCommitSize analyzes the size distribution of commits in repoPath for the
 // given author and date window. Binary files and files matching exclude patterns
 // are ignored.
 func ComputeCommitSize(repoPath, author string, since, until time.Time, exclude []string) (CommitSizeDistribution, error) {
-	args := git.LogArgs(repoPath)
-	args = append(args, git.AuthorArgs(author)...)
-	args = append(args,
-		"--since="+git.TimeArg(since),
-		"--until="+git.TimeArg(until),
-		"--pretty=format:COMMIT %H",
-		"--numstat",
+	return ComputeCommitSizeAcross([]string{repoPath}, []string{author}, since, until, exclude)
+}
+
+// ComputeCommitSizeAcross pools the commits of every repository in paths into a
+// single distribution, for an author reachable under any of the given
+// addresses.
+//
+// Counts add up across repositories with no statistical subtlety: each commit
+// belongs to exactly one bucket wherever it was made. The reason this is not
+// simply a caller-side loop is ReposCovered, which has to reflect the repos
+// that were actually read rather than the repos that were asked for.
+//
+// A repository git cannot read is skipped rather than aborting the run, since
+// one unreadable repo in a -r scan should not cost the user every other repo's
+// numbers. If none could be read the result is an error, not an empty
+// distribution.
+func ComputeCommitSizeAcross(paths []string, authors []string, since, until time.Time, exclude []string) (CommitSizeDistribution, error) {
+	var (
+		dist        CommitSizeDistribution
+		scanned     int
+		contributed int
+		firstErr    error
 	)
-	out, err := exec.Command("git", args...).Output()
-	if err != nil {
-		return CommitSizeDistribution{}, fmt.Errorf("git log: %w", err)
+	for _, path := range dedupePaths(paths) {
+		records, err := scanNumstat(path, authors, since, until, exclude)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		scanned++
+		if len(records) > 0 {
+			// Read is not the same as covered. A repository the author never
+			// touched was examined and contributed nothing, and counting it
+			// would overstate how much history this distribution rests on.
+			contributed++
+		}
+		for _, r := range records {
+			dist.Counts[bucketFor(r.Total())]++
+			dist.Total++
+		}
 	}
-
-	var dist CommitSizeDistribution
-	inCommit := false
-	commitTotal := 0
-
-	flush := func() {
-		if !inCommit {
-			return
-		}
-		var b SizeBucket
-		switch {
-		case commitTotal < 10:
-			b = BucketMicro
-		case commitTotal < 100:
-			b = BucketSmall
-		case commitTotal < 500:
-			b = BucketMedium
-		default:
-			b = BucketLarge
-		}
-		dist.Counts[b]++
-		dist.Total++
-		inCommit = false
-		commitTotal = 0
+	if scanned == 0 {
+		return CommitSizeDistribution{}, coverageErr(firstErr)
 	}
-
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "COMMIT ") {
-			flush()
-			inCommit = true
-			commitTotal = 0
-			continue
-		}
-		if !inCommit || line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		// Binary files show "-" for added/deleted counts.
-		if fields[0] == "-" || fields[1] == "-" {
-			continue
-		}
-		filename := strings.Join(fields[2:], " ")
-		if git.ShouldExclude(filename, exclude) {
-			continue
-		}
-		a, err1 := strconv.Atoi(fields[0])
-		d, err2 := strconv.Atoi(fields[1])
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		commitTotal += a + d
-	}
-	flush()
-
+	dist.ReposCovered = contributed
 	return dist, nil
 }
