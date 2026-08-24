@@ -124,7 +124,42 @@ gitrespect compare -t a@x.com,b@x.com,c@x.com --before=2025-01:2025-06 --after=2
 ```
 
 Members with no output in the before period show `n/a` instead of a ratio.
-Without `-a` or `-t`, compare uses the repo's configured `user.email`.
+Without `-a`, `-t` or `--all-authors`, compare uses the repo's configured
+`user.email`.
+
+## Merge requests and pull requests (`gitrespect prs`)
+
+Git history cannot answer "how many MRs did X open per month". This subcommand
+asks GitLab or GitHub directly and shapes the answer like the git reports.
+
+```bash
+gitrespect prs --provider gitlab --group my-group/web --year=2025 -b monthly
+gitrespect prs --provider github --org my-org -a me@x.com --year=2025
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--provider` | `gitlab` (default) or `github` |
+| `--group` | GitLab group path or id; one query covers every project under it |
+| `--org` | GitHub organization (use instead of `--group`) |
+| `--token` | API token; prefer the `GITLAB_TOKEN` / `GITHUB_TOKEN` env var |
+| `--api-url` | API root for self-hosted instances, e.g. `https://gitlab.corp.com` |
+| `--map` | Pin a platform account to a person: `--map you@corp.com=handle` (repeatable) |
+| `--top N` | Trim the contributor table to N rows; never trims the totals |
+
+It also takes `-a/--author`, `-t/--team`, `--roster`/`--alias`, `-s/--since`,
+`-u/--until`, `--year`, `-b/--breakdown`, `-o/--output`, `-f/--file`, `--theme`.
+
+**Auth:** a token from `--token` or the env var, otherwise it shells out to a
+locally authenticated `glab` or `gh`, which needs no token at all. Needs network
+access, unlike every other command here.
+
+**Identity matching is the weak seam.** Neither the GitLab group MR list nor the
+GitHub search API returns a contributor email, so an email on `-t` often has no
+authoritative counterpart. Matching is exact email/username first, then `--map`
+pins, then a guarded name heuristic. Accounts that cannot be matched are counted
+and named in the output rather than dropped, so if you see unmatched accounts,
+resolve them with `--map` before quoting per-person numbers.
 
 ## Output formats
 
