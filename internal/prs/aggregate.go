@@ -19,7 +19,7 @@ const daysPerMonth = 30.0
 // no clock and no filesystem, so bucketing, identity matching and lead time
 // are all testable on their own.
 func Aggregate(f Fetched, opts Options) (Result, error) {
-	matcher, err := NewMatcher(opts.Authors, opts.Mappings)
+	matcher, err := NewMatcherFor(opts.people(), opts.Mappings)
 	if err != nil {
 		return Result{}, err
 	}

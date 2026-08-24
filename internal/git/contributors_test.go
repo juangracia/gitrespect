@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -302,5 +303,153 @@ func TestTopContributorsZeroBoundsScanEverything(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("TopContributors = %+v, want both authors", got)
+	}
+}
+
+// --- ScanContributors -------------------------------------------------------
+
+// botFixture is a repo with two humans and two automation identities.
+//
+// Commits are created in ascending date order deliberately. git log --since
+// stops walking once it reaches commits older than the cutoff, so a fixture
+// built with backdated commits makes a date-bounded query return nothing and
+// the test lies about what the code did.
+func botFixture(t *testing.T) string {
+	t.Helper()
+	r := newRemoteRepo(t, t.TempDir(), "scan", "", stamp(2025, 1, 1))
+	writeCommit(t, r, "a.txt", "a\n", "alice@corp.com", "Alice", stamp(2025, 1, 2))
+	writeCommit(t, r, "b.txt", "b\n", "alice@corp.com", "Alice", stamp(2025, 1, 3))
+	writeCommit(t, r, "c.txt", "c\n", "bob@corp.com", "Bob", stamp(2025, 1, 4))
+	for i, day := range []int{5, 6, 7} {
+		writeCommit(t, r, "ci"+string(rune('0'+i))+".txt", "ci\n",
+			"group_9812_bot_abc@noreply.gitlab.com", "GitLab CI", stamp(2025, 1, day))
+	}
+	writeCommit(t, r, "rel.txt", "rel\n", "semantic-release-bot@martynus.net", "semantic-release-bot", stamp(2025, 1, 8))
+	return r
+}
+
+func commitsByEmail(contribs []Contributor) map[string]int {
+	m := make(map[string]int, len(contribs))
+	for _, c := range contribs {
+		m[c.Email] = c.Commits
+	}
+	return m
+}
+
+// The cmd layer reports which identities the bot filter removed, and the only
+// way it can know is by diffing an unfiltered scan against a filtered one. If
+// ScanContributors ever starts filtering as well, that diff silently becomes
+// empty and the warning stops appearing with nothing failing to say so. This
+// pins the split that makes the feature possible.
+func TestScanContributorsKeepsBotsThatTopContributorsDrops(t *testing.T) {
+	r := botFixture(t)
+	since, until := stamp(2024, 1, 1), stamp(2026, 1, 1)
+
+	raw, err := ScanContributors([]string{r}, since, until)
+	if err != nil {
+		t.Fatalf("ScanContributors: %v", err)
+	}
+	top, err := TopContributors([]string{r}, since, until, 0, nil)
+	if err != nil {
+		t.Fatalf("TopContributors: %v", err)
+	}
+
+	rawCounts, topCounts := commitsByEmail(raw), commitsByEmail(top)
+
+	bots := []string{
+		"group_9812_bot_abc@noreply.gitlab.com",
+		"semantic-release-bot@martynus.net",
+	}
+	for _, bot := range bots {
+		if _, ok := rawCounts[bot]; !ok {
+			t.Errorf("ScanContributors dropped %s; the unfiltered scan must keep automation identities or the cmd layer cannot report what it excluded", bot)
+		}
+		if _, ok := topCounts[bot]; ok {
+			t.Errorf("TopContributors kept %s, want it filtered out", bot)
+		}
+	}
+
+	// The set the cmd layer prints. It has to be exactly the bots, and above
+	// all it has to be non-empty: an empty diff is how this feature dies.
+	var excluded []string
+	for email := range rawCounts {
+		if _, kept := topCounts[email]; !kept {
+			excluded = append(excluded, email)
+		}
+	}
+	sort.Strings(excluded)
+	if !reflect.DeepEqual(excluded, bots) {
+		t.Errorf("excluded = %v, want %v", excluded, bots)
+	}
+
+	// The two entry points must agree on the humans, so the split cannot drift
+	// into counting commits differently on each side.
+	for email, want := range map[string]int{"alice@corp.com": 2, "bob@corp.com": 1} {
+		if rawCounts[email] != want {
+			t.Errorf("ScanContributors counted %d commits for %s, want %d", rawCounts[email], email, want)
+		}
+		if topCounts[email] != want {
+			t.Errorf("TopContributors counted %d commits for %s, want %d", topCounts[email], email, want)
+		}
+	}
+}
+
+// The raw scan is ordered too, so a caller that prints it without filtering
+// does not get map order.
+func TestScanContributorsSortsByCommitsThenEmail(t *testing.T) {
+	r := botFixture(t)
+
+	got, err := ScanContributors([]string{r}, stamp(2024, 1, 1), stamp(2026, 1, 1))
+	if err != nil {
+		t.Fatalf("ScanContributors: %v", err)
+	}
+
+	var emails []string
+	for _, c := range got {
+		emails = append(emails, c.Email)
+	}
+	// 3 commits, then 2, then the three single-commit authors by address.
+	want := []string{
+		"group_9812_bot_abc@noreply.gitlab.com",
+		"alice@corp.com",
+		"bob@corp.com",
+		"dev@example.com",
+		"semantic-release-bot@martynus.net",
+	}
+	if !reflect.DeepEqual(emails, want) {
+		t.Errorf("emails = %v, want %v", emails, want)
+	}
+}
+
+func TestScanContributorsSkipsUnreadablePaths(t *testing.T) {
+	r := botFixture(t)
+	notARepo := t.TempDir()
+
+	got, err := ScanContributors([]string{notARepo, r}, stamp(2024, 1, 1), stamp(2026, 1, 1))
+	if err != nil {
+		t.Fatalf("ScanContributors: %v", err)
+	}
+	if len(got) != 5 {
+		t.Errorf("got %d contributors, want the 5 from the readable repo: %+v", len(got), got)
+	}
+}
+
+// The all-paths-failed guard lives here now that the scan is split out, so it
+// is pinned on this entry point directly rather than only through the wrapper.
+func TestScanContributorsErrorsWhenEveryPathFails(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+
+	if _, err := ScanContributors([]string{a, b}, stamp(2024, 1, 1), stamp(2026, 1, 1)); err == nil {
+		t.Error("ScanContributors succeeded with no readable repos, want error")
+	}
+}
+
+func TestScanContributorsNoPaths(t *testing.T) {
+	got, err := ScanContributors(nil, stamp(2024, 1, 1), stamp(2026, 1, 1))
+	if err != nil {
+		t.Fatalf("ScanContributors(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ScanContributors(nil) = %v, want empty", got)
 	}
 }

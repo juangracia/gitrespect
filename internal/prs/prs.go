@@ -179,9 +179,13 @@ type Options struct {
 	Provider string
 	// Scope is the GitLab group path or id, or the GitHub org.
 	Scope string
-	// Authors are the identities to report on. Empty means every account that
-	// opened a merge request in the window.
+	// Authors are the identities to report on, one per string. Empty means
+	// every account that opened a merge request in the window.
 	Authors []string
+	// People is the grouped form of Authors, for callers that already know one
+	// person owns several addresses (a roster). It takes precedence over
+	// Authors when set.
+	People []Person
 	// Mappings are "email=handle" pairs that pin a platform account to an
 	// identity when the heuristics in Matcher cannot bridge the two.
 	Mappings []string
@@ -233,6 +237,18 @@ func (o Options) validate() error {
 			o.Since.Format("2006-01-02"), o.Until.Format("2006-01-02"))
 	}
 	return nil
+}
+
+// people returns the identities to report on in their grouped form.
+func (o Options) people() []Person {
+	if len(o.People) > 0 {
+		return o.People
+	}
+	out := make([]Person, 0, len(o.Authors))
+	for _, a := range o.Authors {
+		out = append(out, Person{Label: a})
+	}
+	return out
 }
 
 // getenv reads an environment variable through the injectable hook so tests

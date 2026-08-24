@@ -137,6 +137,42 @@ func TestMatcherNoIdentitiesNeverMatches(t *testing.T) {
 	}
 }
 
+// A roster gives one person several addresses. Splitting them into separate
+// identities would split that person's work across several rows.
+func TestNewMatcherForKeepsOnePersonWithSeveralEmailsAsOneIdentity(t *testing.T) {
+	m, err := NewMatcherFor([]Person{
+		{Label: "Jane Doe", Keys: []string{"jane@corp.com", "j.doe@personal.com"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewMatcherFor failed: %v", err)
+	}
+	if got := m.Labels(); len(got) != 1 || got[0] != "Jane Doe" {
+		t.Fatalf("Labels() = %v, want one identity labelled Jane Doe", got)
+	}
+	for _, mrq := range []MergeRequest{
+		{AuthorEmail: "jane@corp.com"},
+		{AuthorEmail: "j.doe@personal.com"},
+		{AuthorUser: "j.doe"},
+		{AuthorName: "Jane Doe"},
+	} {
+		got, ok := m.Match(mrq)
+		if !ok || got != "Jane Doe" {
+			t.Errorf("Match(%+v) = (%q, %v), want (Jane Doe, true)", mrq, got, ok)
+		}
+	}
+}
+
+func TestOptionsPeopleTakesPrecedenceOverAuthors(t *testing.T) {
+	opts := Options{
+		Authors: []string{"ignored@corp.com"},
+		People:  []Person{{Label: "Jane Doe", Keys: []string{"jane@corp.com"}}},
+	}
+	got := opts.people()
+	if len(got) != 1 || got[0].Label != "Jane Doe" {
+		t.Fatalf("people() = %+v, want the grouped form to win", got)
+	}
+}
+
 func TestMatcherLabelsPreserveInputOrder(t *testing.T) {
 	m := mustMatcher(t, []string{"b@corp.com", "a@corp.com"}, nil)
 	got := m.Labels()

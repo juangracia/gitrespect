@@ -41,22 +41,51 @@ type Matcher struct {
 	fuzzy      map[string]int
 }
 
-// NewMatcher builds a matcher for the requested identities. mappings are
-// "email=handle" pairs; the left side must be one of the requested identities
-// when a filter is in play, otherwise the mapping would silently do nothing.
+// Person is one identity expressed as a label plus every string that should
+// resolve to it. A roster produces exactly this shape: one human, several
+// email addresses. Flattening those into separate identities would split one
+// person's work across several rows, so the grouping has to survive.
+type Person struct {
+	Label string
+	Keys  []string
+}
+
+// NewMatcher builds a matcher for identities given as plain strings, each its
+// own person. mappings are "email=handle" pairs; the left side must be one of
+// the requested identities when a filter is in play, otherwise the mapping
+// would silently do nothing.
 func NewMatcher(requested []string, mappings []string) (*Matcher, error) {
+	people := make([]Person, 0, len(requested))
+	for _, raw := range requested {
+		people = append(people, Person{Label: raw})
+	}
+	return NewMatcherFor(people, mappings)
+}
+
+// NewMatcherFor builds a matcher from pre-grouped identities, so one person
+// with several email addresses stays one row in the report.
+func NewMatcherFor(people []Person, mappings []string) (*Matcher, error) {
 	m := &Matcher{
 		exact: make(map[string]int),
 		fuzzy: make(map[string]int),
 	}
 
-	for _, raw := range requested {
-		label := strings.TrimSpace(raw)
+	for _, p := range people {
+		label := strings.TrimSpace(p.Label)
 		if label == "" {
 			continue
 		}
-		if _, err := m.addIdentity(label); err != nil {
+		idx := len(m.identities)
+		m.identities = append(m.identities, label)
+		// The label is a match key in its own right: a roster label like
+		// "Jane Doe" is exactly what a platform display name looks like.
+		if err := m.addKeys(label, idx); err != nil {
 			return nil, err
+		}
+		for _, key := range p.Keys {
+			if err := m.addKeys(key, idx); err != nil {
+				return nil, err
+			}
 		}
 	}
 	filtering := len(m.identities) > 0
@@ -72,8 +101,9 @@ func NewMatcher(requested []string, mappings []string) (*Matcher, error) {
 			if filtering {
 				return nil, fmt.Errorf("--map %q refers to %q, which is not in --author/--team", raw, left)
 			}
-			var err error
-			if idx, err = m.addIdentity(left); err != nil {
+			idx = len(m.identities)
+			m.identities = append(m.identities, left)
+			if err := m.addKeys(left, idx); err != nil {
 				return nil, err
 			}
 		}
@@ -88,27 +118,28 @@ func NewMatcher(requested []string, mappings []string) (*Matcher, error) {
 	return m, nil
 }
 
-// addIdentity registers a requested identity and every key derivable from the
-// string itself, returning its index.
-func (m *Matcher) addIdentity(label string) (int, error) {
-	idx := len(m.identities)
-	m.identities = append(m.identities, label)
-
-	if err := m.addExact(label, idx); err != nil {
-		return 0, err
+// addKeys registers every match key derivable from one string: the string
+// itself, its normalized form, and, when it is an email, its local part.
+func (m *Matcher) addKeys(raw string, idx int) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
 	}
-	if err := m.addFuzzy(normalizeHandle(label), idx); err != nil {
-		return 0, err
+	if err := m.addExact(raw, idx); err != nil {
+		return err
 	}
-	if local, ok := emailLocalPart(label); ok {
+	if err := m.addFuzzy(normalizeHandle(raw), idx); err != nil {
+		return err
+	}
+	if local, ok := emailLocalPart(raw); ok {
 		if err := m.addExact(local, idx); err != nil {
-			return 0, err
+			return err
 		}
 		if err := m.addFuzzy(normalizeHandle(local), idx); err != nil {
-			return 0, err
+			return err
 		}
 	}
-	return idx, nil
+	return nil
 }
 
 func (m *Matcher) addExact(key string, idx int) error {

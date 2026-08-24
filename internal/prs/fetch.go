@@ -15,7 +15,7 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 	}
 	// Validate the identity flags before spending a single API call on a
 	// query whose results could not be attributed anyway.
-	if _, err := NewMatcher(opts.Authors, opts.Mappings); err != nil {
+	if _, err := NewMatcherFor(opts.people(), opts.Mappings); err != nil {
 		return Result{}, err
 	}
 
@@ -45,7 +45,7 @@ func FetchComparison(ctx context.Context, opts Options, before, after Window) (C
 	if err := afterOpts.validate(); err != nil {
 		return Comparison{}, fmt.Errorf("after period: %w", err)
 	}
-	if _, err := NewMatcher(opts.Authors, opts.Mappings); err != nil {
+	if _, err := NewMatcherFor(opts.people(), opts.Mappings); err != nil {
 		return Comparison{}, err
 	}
 
