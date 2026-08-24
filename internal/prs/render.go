@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 // ANSI styles, blanked when the output is not an interactive terminal so
@@ -52,7 +53,7 @@ func WriteTerminal(w io.Writer, res Result) error {
 
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s%s gitrespect%s - Merge Requests\n", colorBold, colorCyan, colorReset)
-	fmt.Fprintf(w, "%s%s %s (%s)%s\n", colorDim, res.Provider, res.Scope, dateRange, colorReset)
+	fmt.Fprintf(w, "%s%s %s (%s)%s\n", colorDim, sanitize(res.Provider), sanitize(res.Scope), dateRange, colorReset)
 	fmt.Fprintln(w, strings.Repeat("─", 60))
 	fmt.Fprintln(w)
 
@@ -83,10 +84,15 @@ func WriteTerminal(w io.Writer, res Result) error {
 
 func writeAuthorTable(w io.Writer, res Result) {
 	label := "Contributor"
-	width := len(label)
-	for _, a := range res.Authors {
-		if len(a.Identity) > width {
-			width = len(a.Identity)
+	// Sanitize once, up front, so the width is measured on exactly the string
+	// that gets printed. Measuring the raw name and printing a cleaned one
+	// would misalign every row below it.
+	labels := make([]string, len(res.Authors))
+	width := displayWidth(label)
+	for i, a := range res.Authors {
+		labels[i] = sanitize(a.Identity)
+		if n := displayWidth(labels[i]); n > width {
+			width = n
 		}
 	}
 	if width > 38 {
@@ -100,13 +106,13 @@ func writeAuthorTable(w io.Writer, res Result) {
 	fmt.Fprintln(w, "  "+strings.Repeat("─", width+26))
 
 	days := res.Days()
-	for _, a := range res.Authors {
+	for i, a := range res.Authors {
 		var perMonth float64
 		if days > 0 {
 			perMonth = float64(a.Opened) / days * daysPerMonth
 		}
 		fmt.Fprintf(w, "  %-*s %s%-8s%s %-8s %.1f\n",
-			width, truncate(a.Identity, width),
+			width, truncate(labels[i], width),
 			colorCyan, formatNumber(a.Opened), colorReset,
 			formatNumber(a.Merged),
 			perMonth)
@@ -120,10 +126,10 @@ func writeAuthorTable(w io.Writer, res Result) {
 }
 
 func writeBreakdown(w io.Writer, res Result) {
-	labelWidth := len("Period")
+	labelWidth := displayWidth("Period")
 	for _, p := range res.Periods {
-		if len(p.Label) > labelWidth {
-			labelWidth = len(p.Label)
+		if n := displayWidth(p.Label); n > labelWidth {
+			labelWidth = n
 		}
 	}
 
@@ -150,7 +156,7 @@ func writeBreakdown(w io.Writer, res Result) {
 		if a.Opened == 0 {
 			continue
 		}
-		fmt.Fprintf(w, "  %s● %s%s\n", colorBold, a.Identity, colorReset)
+		fmt.Fprintf(w, "  %s● %s%s\n", colorBold, sanitize(a.Identity), colorReset)
 		cells := make([]string, 0, len(a.Periods))
 		for _, p := range a.Periods {
 			cells = append(cells, fmt.Sprintf("%s %d", p.Label, p.Opened))
@@ -179,7 +185,7 @@ func writeCaveats(w io.Writer, res Result) {
 			if i == len(res.Unmatched)-1 {
 				prefix = "└──"
 			}
-			fmt.Fprintf(w, "  %s %s (%d)\n", prefix, u.Handle, u.Opened)
+			fmt.Fprintf(w, "  %s %s (%d)\n", prefix, sanitize(u.Handle), u.Opened)
 		}
 		// The list is capped, so say when it is not the whole story.
 		if hidden := res.UnmatchedAccounts - len(res.Unmatched); hidden > 0 {
@@ -200,14 +206,14 @@ func RenderComparisonTerminal(c Comparison) error {
 func WriteComparisonTerminal(w io.Writer, c Comparison) error {
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s%s gitrespect%s - Merge Request Comparison\n", colorBold, colorCyan, colorReset)
-	fmt.Fprintf(w, "%s%s %s%s\n", colorDim, c.After.Provider, c.After.Scope, colorReset)
+	fmt.Fprintf(w, "%s%s %s%s\n", colorDim, sanitize(c.After.Provider), sanitize(c.After.Scope), colorReset)
 	fmt.Fprintln(w, strings.Repeat("─", 60))
 	fmt.Fprintln(w)
 
-	width := len("Period")
+	width := displayWidth("Period")
 	for _, l := range []string{c.BeforeLabel, c.AfterLabel} {
-		if len(l) > width {
-			width = len(l)
+		if n := displayWidth(l); n > width {
+			width = n
 		}
 	}
 
@@ -234,10 +240,12 @@ func WriteComparisonTerminal(w io.Writer, c Comparison) error {
 	fmt.Fprintln(w)
 
 	if len(c.Authors) > 0 {
-		aw := len("Contributor")
-		for _, a := range c.Authors {
-			if len(a.Identity) > aw {
-				aw = len(a.Identity)
+		labels := make([]string, len(c.Authors))
+		aw := displayWidth("Contributor")
+		for i, a := range c.Authors {
+			labels[i] = sanitize(a.Identity)
+			if n := displayWidth(labels[i]); n > aw {
+				aw = n
 			}
 		}
 		if aw > 38 {
@@ -248,9 +256,9 @@ func WriteComparisonTerminal(w io.Writer, c Comparison) error {
 			colorDim, aw, "Contributor", colorReset,
 			colorDim, colorReset, colorDim, colorReset, colorDim, colorReset)
 		fmt.Fprintln(w, "  "+strings.Repeat("─", aw+28))
-		for _, a := range c.Authors {
+		for i, a := range c.Authors {
 			fmt.Fprintf(w, "  %-*s %-8d %-8d %s\n",
-				aw, truncate(a.Identity, aw), a.Before, a.After,
+				aw, truncate(labels[i], aw), a.Before, a.After,
 				multiplierText(a.Multiplier, a.Undefined))
 		}
 		fmt.Fprintln(w)
@@ -325,11 +333,70 @@ func leadTimeSummary(lt *LeadTimeStats) string {
 	return fmt.Sprintf("%.1fd median", lt.MedianDays)
 }
 
-func truncate(s string, width int) string {
-	if width <= 3 || len(s) <= width {
+// sanitize strips control characters out of text that came from a review
+// platform before it reaches a terminal.
+//
+// A GitLab or GitHub display name can contain any byte, unlike a git ident, so
+// an author who wants to can embed ESC sequences that erase lines of the report
+// someone is reading or retitle their terminal. Tab survives because it is
+// ordinary whitespace; every other C0 control, DEL, and the C1 range are
+// replaced with U+FFFD so the tampering is visible rather than silently
+// swallowed. This is a display-layer concern only: the values used for identity
+// matching are never touched, or a crafted name could change who work is
+// attributed to.
+func sanitize(s string) string {
+	if !needsSanitizing(s) {
 		return s
 	}
-	return s[:width-3] + "..."
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if isControl(r) {
+			b.WriteRune(utf8.RuneError)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func needsSanitizing(s string) bool {
+	for _, r := range s {
+		if isControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// isControl reports whether r is a C0 control other than tab, DEL, or a C1
+// control. Newline and carriage return count: a name carrying either can forge
+// extra rows in the table.
+func isControl(r rune) bool {
+	switch {
+	case r == '\t':
+		return false
+	case r < 0x20, r == 0x7f:
+		return true
+	case r >= 0x80 && r <= 0x9f:
+		return true
+	default:
+		return false
+	}
+}
+
+// displayWidth counts runes, which is what fmt's %-*s padding counts. Using
+// byte length here would misalign every row containing a non-ASCII name.
+func displayWidth(s string) int {
+	return utf8.RuneCountInString(s)
+}
+
+func truncate(s string, width int) string {
+	if width <= 3 || displayWidth(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:width-3]) + "..."
 }
 
 func pluralize(n int, word string) string {

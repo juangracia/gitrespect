@@ -8,6 +8,7 @@ package prs
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -216,6 +217,19 @@ type Options struct {
 	Runner     CommandRunner
 	LookPath   func(string) (string, error)
 	Getenv     func(string) string
+	// Stderr receives warnings that must reach the user before the request is
+	// made. Defaults to os.Stderr.
+	Stderr io.Writer
+}
+
+// warn writes a diagnostic that belongs on stderr rather than in the report,
+// so it survives `-o json > file` instead of corrupting the payload.
+func (o Options) warn(format string, args ...any) {
+	w := o.Stderr
+	if w == nil {
+		w = os.Stderr
+	}
+	fmt.Fprintf(w, format, args...)
 }
 
 func (o Options) validate() error {
@@ -230,6 +244,12 @@ func (o Options) validate() error {
 			return fmt.Errorf("--org is required for the github provider (for example --org my-org)")
 		}
 		return fmt.Errorf("--group is required for the gitlab provider (for example --group bunn-digital/web)")
+	}
+	if err := checkScope(o.Provider, o.Scope); err != nil {
+		return err
+	}
+	if _, err := checkAPIURL(o.BaseURL); err != nil {
+		return err
 	}
 	if o.Granularity != "" && !ValidGranularity(o.Granularity) {
 		return fmt.Errorf("invalid --breakdown %q: expected one of %s",

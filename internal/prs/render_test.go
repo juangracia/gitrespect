@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func sampleResult(t *testing.T) Result {
@@ -273,6 +274,163 @@ func TestRenderHTMLEscapesUntrustedText(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if strings.Contains(string(raw), "<img src=x onerror") {
 		t.Fatal("author names from the API must be escaped, not injected raw")
+	}
+}
+
+// A GitLab or GitHub display name can hold any byte, unlike a git ident, so an
+// MR author can otherwise erase lines of a report someone is reading or retitle
+// their terminal. Proven end to end through the real render path.
+func TestWriteTerminalStripsTerminalEscapesFromPlatformNames(t *testing.T) {
+	const hostile = "Jane\x1b[2K\x1b]0;pwned\x07\rDoe\x00"
+
+	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
+	opts.Granularity = "monthly"
+
+	f := Fetched{Items: []MergeRequest{
+		{ID: "1", AuthorUser: hostile, AuthorName: hostile, CreatedAt: localTime(t, "2025-01-05 10:00")},
+		{ID: "2", AuthorUser: "ordinary", CreatedAt: localTime(t, "2025-01-06 10:00")},
+	}}
+
+	res, err := Aggregate(f, opts)
+	if err != nil {
+		t.Fatalf("Aggregate failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := WriteTerminal(&buf, res); err != nil {
+		t.Fatalf("WriteTerminal failed: %v", err)
+	}
+	assertNoTerminalEscapes(t, buf.String())
+}
+
+func TestWriteTerminalStripsEscapesFromUnmatchedHandles(t *testing.T) {
+	const hostile = "renovate\x1b[2K\x1b]0;pwned\x07"
+
+	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
+	opts.Authors = []string{"alice@corp.com"}
+
+	res, err := Aggregate(Fetched{Items: []MergeRequest{
+		{ID: "1", AuthorUser: hostile, CreatedAt: localTime(t, "2025-01-05 10:00")},
+	}}, opts)
+	if err != nil {
+		t.Fatalf("Aggregate failed: %v", err)
+	}
+	if res.UnmatchedTotal != 1 {
+		t.Fatalf("UnmatchedTotal = %d, want the hostile account reported", res.UnmatchedTotal)
+	}
+
+	var buf bytes.Buffer
+	if err := WriteTerminal(&buf, res); err != nil {
+		t.Fatalf("WriteTerminal failed: %v", err)
+	}
+	assertNoTerminalEscapes(t, buf.String())
+}
+
+func TestWriteComparisonTerminalStripsEscapes(t *testing.T) {
+	const hostile = "Bob\x1b[2K\x1b]0;pwned\x07"
+
+	before := Result{Provider: ProviderGitLab, Scope: "g",
+		Since: localTime(t, "2025-01-01 00:00"), Until: localTime(t, "2025-02-01 00:00"),
+		Opened: 2, Authors: []AuthorStats{{Identity: hostile, Opened: 2}}}
+	after := Result{Provider: ProviderGitLab, Scope: "g",
+		Since: localTime(t, "2025-02-01 00:00"), Until: localTime(t, "2025-03-01 00:00"),
+		Opened: 4, Authors: []AuthorStats{{Identity: hostile, Opened: 4}}}
+
+	var buf bytes.Buffer
+	if err := WriteComparisonTerminal(&buf, CompareResults(before, after)); err != nil {
+		t.Fatalf("WriteComparisonTerminal failed: %v", err)
+	}
+	assertNoTerminalEscapes(t, buf.String())
+}
+
+// assertNoTerminalEscapes checks that nothing beyond the reporter's own styling
+// reached the output. The reporter blanks its ANSI codes when stdout is not a
+// terminal, which it is not under `go test`, so any escape byte here came from
+// the data.
+func assertNoTerminalEscapes(t *testing.T, out string) {
+	t.Helper()
+	for _, bad := range []struct {
+		name string
+		seq  string
+	}{
+		{"ESC", "\x1b"},
+		{"erase line", "\x1b[2K"},
+		{"set window title", "\x1b]0;"},
+		{"BEL", "\x07"},
+		{"NUL", "\x00"},
+		{"carriage return", "\r"},
+	} {
+		if strings.Contains(out, bad.seq) {
+			t.Errorf("output contains a %s sequence from platform data:\n%q", bad.name, out)
+		}
+	}
+}
+
+func TestSanitize(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"ordinary text untouched", "Jane Doe", "Jane Doe"},
+		{"tab survives as whitespace", "a\tb", "a\tb"},
+		{"escape replaced", "a\x1bb", "a�b"},
+		{"newline replaced", "a\nb", "a�b"},
+		{"carriage return replaced", "a\rb", "a�b"},
+		{"nul replaced", "a\x00b", "a�b"},
+		{"del replaced", "a\x7fb", "a�b"},
+		{"c1 replaced", "ab", "a�b"},
+		{"non-ascii text preserved", "José Ñuñez", "José Ñuñez"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitize(tc.in); got != tc.want {
+				t.Fatalf("sanitize(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Sanitizing must stay in the display layer: a crafted name that changed the
+// matching keys could redirect someone else's work to the attacker's row.
+func TestSanitizeDoesNotAffectIdentityMatching(t *testing.T) {
+	opts := window(t, "2025-01-01 00:00", "2025-02-01 00:00")
+	opts.Authors = []string{"jane\x1b@corp.com"}
+
+	res, err := Aggregate(Fetched{Items: []MergeRequest{
+		{ID: "1", AuthorEmail: "jane\x1b@corp.com", CreatedAt: localTime(t, "2025-01-05 10:00")},
+	}}, opts)
+	if err != nil {
+		t.Fatalf("Aggregate failed: %v", err)
+	}
+	// The raw value still matched, so nothing was dropped.
+	if res.Opened != 1 || res.UnmatchedTotal != 0 {
+		t.Fatalf("Opened=%d Unmatched=%d, want the raw value to still match", res.Opened, res.UnmatchedTotal)
+	}
+	// But it is cleaned on the way out.
+	var buf bytes.Buffer
+	if err := WriteTerminal(&buf, res); err != nil {
+		t.Fatalf("WriteTerminal failed: %v", err)
+	}
+	assertNoTerminalEscapes(t, buf.String())
+}
+
+func TestDisplayWidthCountsRunes(t *testing.T) {
+	// fmt pads %-*s by runes, so measuring bytes would misalign every row
+	// containing a non-ASCII name.
+	if got := displayWidth("José"); got != 4 {
+		t.Fatalf("displayWidth(\"José\") = %d, want 4", got)
+	}
+}
+
+func TestTruncateIsRuneAware(t *testing.T) {
+	// Cutting on a byte boundary would emit a broken rune.
+	got := truncate("Ñuñez-Fernández-Extra", 10)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncate produced invalid UTF-8: %q", got)
+	}
+	if displayWidth(got) != 10 {
+		t.Fatalf("truncate = %q (%d runes), want 10 runes", got, displayWidth(got))
 	}
 }
 

@@ -122,6 +122,12 @@ func newTransport(opts Options) (transport, error) {
 		if opts.Provider == ProviderGitHub {
 			base = githubBaseURL(opts.BaseURL)
 		}
+		// validate() already rejected an unusable --api-url; this is the one
+		// shape that is allowed but worth saying out loud, once, before the
+		// token goes anywhere.
+		if plaintext, _ := checkAPIURL(opts.BaseURL); plaintext {
+			opts.warn("%s", plaintextWarning(opts.Provider, base))
+		}
 		return &httpTransport{
 			provider: opts.Provider,
 			base:     base,
