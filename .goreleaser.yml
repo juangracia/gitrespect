@@ -22,11 +22,11 @@ builds:
       - -s -w -X github.com/juangracia/gitrespect/internal/cmd.Version={{.Version}} -X github.com/juangracia/gitrespect/internal/cmd.Commit={{.ShortCommit}} -X github.com/juangracia/gitrespect/internal/cmd.Date={{.Date}}
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 release:
   mode: replace
