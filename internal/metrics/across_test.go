@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"math"
 	"path/filepath"
 	"testing"
@@ -224,7 +225,10 @@ func TestCommitSizeAcrossSumsBuckets(t *testing.T) {
 	// Three large commits and one medium one.
 	big := newTestRepo(t)
 	for i, off := range []float64{0, 1, 2} {
-		big.writeFile("big"+line(i)+".txt", lines(600))
+		// fmt rather than line(), which appends a newline for use as file
+		// CONTENT. Embedded in a name it produced "biga\n.txt", which Unix
+		// accepts and Windows rejects, so this passed everywhere but CI.
+		big.writeFile(fmt.Sprintf("big%d.txt", i), lines(600))
 		big.commit("large", testAuthor, day(base, off))
 	}
 	big.writeFile("medium.txt", lines(150))
