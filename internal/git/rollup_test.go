@@ -221,6 +221,43 @@ func assertRollupOrder(t *testing.T, rollups []RepoRollup) {
 	}
 }
 
+// The By Repository table has to add up to the team total, or a reader who
+// sums the column finds a number that disagrees with the headline and has no
+// way to tell which one is wrong.
+//
+// Dropping empty rows is what makes this worth pinning: it is the one place
+// where rows leave the table, and it is only safe because those rows are all
+// zero. This asserts the totals against the raw input including the dropped
+// rows, so a drop rule that ever removed real work would fail here.
+func TestRollupByRepoTotalsReconcileWithInput(t *testing.T) {
+	in := teamFixture()
+
+	var wantAdded, wantDeleted, wantCommits int
+	for _, rows := range in {
+		for _, s := range rows {
+			wantAdded += s.Added
+			wantDeleted += s.Deleted
+			wantCommits += s.Commits
+		}
+	}
+
+	var gotAdded, gotDeleted, gotCommits, gotNet int
+	for _, r := range RollupByRepo(in) {
+		gotAdded += r.Added
+		gotDeleted += r.Deleted
+		gotCommits += r.Commits
+		gotNet += r.Net
+	}
+
+	if gotAdded != wantAdded || gotDeleted != wantDeleted || gotCommits != wantCommits {
+		t.Errorf("rollup totals +%d/-%d over %d commits, want +%d/-%d over %d",
+			gotAdded, gotDeleted, gotCommits, wantAdded, wantDeleted, wantCommits)
+	}
+	if gotNet != wantAdded-wantDeleted {
+		t.Errorf("summed net = %d, want %d", gotNet, wantAdded-wantDeleted)
+	}
+}
+
 // A caller that keys the map by label and leaves Author unset would otherwise
 // print a table of blank names.
 func TestRollupByRepoFillsAuthorFromMapKey(t *testing.T) {

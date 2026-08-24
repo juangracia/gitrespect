@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/juangracia/gitrespect/internal/git"
+	"github.com/juangracia/gitrespect/internal/prs"
 	"github.com/juangracia/gitrespect/internal/report"
 	"github.com/spf13/cobra"
 )
@@ -15,6 +16,13 @@ import (
 var (
 	beforePeriod string
 	afterPeriod  string
+	compareData  string
+)
+
+// compareDataSources are the values --data accepts.
+const (
+	dataLines = "lines"
+	dataPRs   = "prs"
 )
 
 var compareCmd = &cobra.Command{
@@ -45,10 +53,63 @@ func init() {
 	compareCmd.Flags().StringArrayVar(&aliasSpecs, "alias", nil, "Inline identity: 'Name=a@x.com,b@x.com' (repeatable)")
 	compareCmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Scan subdirectories for git repositories")
 
+	// Comparing merge request volume answers the same "did this change help"
+	// question as lines of code, and for a review-heavy team it is the more
+	// honest signal, so it shares this command rather than growing its own.
+	compareCmd.Flags().StringVar(&compareData, "data", dataLines, "What to compare: lines or prs")
+	compareCmd.Flags().StringVar(&prsProvider, "provider", prs.ProviderGitLab, "With --data=prs: review platform, gitlab or github")
+	compareCmd.Flags().StringVar(&prsGroup, "group", "", "With --data=prs: GitLab group path or id")
+	compareCmd.Flags().StringVar(&prsOrg, "org", "", "With --data=prs: GitHub organization")
+	compareCmd.Flags().StringArrayVar(&prsMap, "map", nil, "With --data=prs: pin a platform account to an identity (repeatable)")
+	compareCmd.Flags().StringVar(&prsToken, "token", "", "With --data=prs: API token (prefer GITLAB_TOKEN / GITHUB_TOKEN)")
+	compareCmd.Flags().StringVar(&prsAPIURL, "api-url", "", "With --data=prs: API root for a self-hosted instance")
+
 	compareCmd.MarkFlagRequired("before")
 	compareCmd.MarkFlagRequired("after")
 
 	rootCmd.AddCommand(compareCmd)
+}
+
+// runComparePRs answers the same before/after question as the line based
+// comparison, but against merge request volume.
+//
+// This is the case the git based compare cannot reach: a merge request lives on
+// the review platform, so quantifying "we opened Nx more MRs after adopting X"
+// previously meant building a separate API client and duplicating the
+// multiplier arithmetic by hand.
+func runComparePRs(cmd *cobra.Command, before, after prs.Window) error {
+	scope, err := resolvePRScope(prsProvider, prsGroup, prsOrg)
+	if err != nil {
+		return err
+	}
+	authors, err := resolvePRAuthors(author, team)
+	if err != nil {
+		return err
+	}
+	if breakdown != "" {
+		fmt.Fprintln(os.Stderr, "note: --breakdown is not applied to --data=prs; the comparison reports per-period totals")
+	}
+
+	comparison, err := prs.FetchComparison(cmd.Context(), prs.Options{
+		Provider: prsProvider,
+		Scope:    scope,
+		Authors:  authors,
+		Mappings: prsMap,
+		Token:    prsToken,
+		BaseURL:  prsAPIURL,
+	}, before, after)
+	if err != nil {
+		return err
+	}
+
+	switch output {
+	case "json":
+		return prs.RenderComparisonJSON(comparison, file)
+	case "html":
+		return fmt.Errorf("--output html is not supported for --data=prs yet: use terminal or json")
+	default:
+		return prs.RenderComparisonTerminal(comparison)
+	}
 }
 
 func parsePeriod(period string) (time.Time, time.Time, error) {
@@ -126,6 +187,16 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	afterStart, afterEnd, err := parsePeriod(afterPeriod)
 	if err != nil {
 		return fmt.Errorf("invalid --after: %w", err)
+	}
+
+	switch compareData {
+	case dataLines:
+	case dataPRs:
+		return runComparePRs(cmd,
+			prs.Window{Label: beforePeriod, Since: beforeStart, Until: beforeEnd},
+			prs.Window{Label: afterPeriod, Since: afterStart, Until: afterEnd})
+	default:
+		return fmt.Errorf("invalid --data %q: expected %s or %s", compareData, dataLines, dataPRs)
 	}
 
 	roster, err := buildRoster(rosterPath, aliasSpecs)
