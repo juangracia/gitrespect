@@ -522,10 +522,15 @@ gitrespect -r ~/projects --top 10 --year=2025 -b monthly \
   -o html --chart --highlight "Wesley Ornellas" -f team.html
 ```
 
-The chart is inline SVG in the same self-contained file, with no external
-requests, and its palette is checked for colour-vision-deficiency safety and
-contrast in both the light and dark themes. `--chart` needs `--breakdown` to
-have periods to plot, and only applies to `--output html`.
+The chart plots whatever granularity `--breakdown` names, monthly, weekly or
+daily, and is built from the same rows as the table beside it, so the two cannot
+disagree. Its title names the granularity, so a screenshot is self-describing.
+
+It is inline SVG in the same self-contained file, with no external requests, and
+its palette is checked for colour-vision-deficiency safety and contrast in both
+the light and dark themes. `--chart` needs `--breakdown` to say what a point
+covers, and only applies to `--output html`; when a chart cannot be drawn the
+report says why rather than silently omitting it.
 
 ## Merge Requests and Pull Requests
 

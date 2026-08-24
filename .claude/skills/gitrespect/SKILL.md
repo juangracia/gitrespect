@@ -51,6 +51,7 @@ Map what the user wants to the right flags. Common intents:
 | A standing team roster | `gitrespect -r ~/projects --roster team.yaml --top 10 --year=2025` |
 | Everyone's commits, unfiltered | `gitrespect -r ~/projects --all-authors --year=2025` |
 | A trend chart in HTML | `gitrespect --year=2025 -b monthly -o html --chart -f report.html` |
+| A weekly or daily trend chart | `gitrespect --year=2025 -b weekly -o html --chart -f report.html` |
 | One member vs the team average | `gitrespect -t a@x.com,b@x.com --year=2025 -b monthly -o html --chart --highlight a@x.com -f t.html` |
 | When inside each period it changed | `gitrespect compare --before=2025-01:2025-06 --after=2025-07:2025-12 -b monthly` |
 | MR/PR volume per person | `gitrespect prs --provider gitlab --group my-group/web --year=2025 -b monthly` |
@@ -222,7 +223,7 @@ gitrespect -r ~/projects --per-repo --year=2025
 - `--top` filters bot/CI identities by regex against both address and display name. Excluded identities are listed on stderr; if a real person is caught by it, name them with `-t`, which skips discovery. Add patterns with `--exclude-authors`.
 - `-r` skips repos that share an `origin` remote with one already counted, warning on stderr. Repos with no readable remote are always kept.
 - A roster (`--roster` / `--alias`) applies the same identities to every repo, unlike `.mailmap` which is per-repo. Listing one address under two people is rejected.
-- `--chart` needs `-b/--breakdown` and `-o html`; it warns and no-ops otherwise. `--highlight` needs a team.
+- `--chart` needs `-b/--breakdown` and `-o html`. It plots whatever granularity `--breakdown` names (monthly, weekly or daily), drawn from the same rows as the table so the two cannot disagree. When it cannot be drawn the report says why, rather than the chart being silently absent. `--highlight` needs a team.
 - `prs` needs network access and either a token (`GITLAB_TOKEN`/`GITHUB_TOKEN`) or an authenticated `glab`/`gh`. Prefer the env var: `--token` is visible to anyone who can run `ps`.
 - `prs` lead time uses real MR open→merge timestamps, which is a cleaner signal than the commit-graph heuristic behind `--metrics=lead-time`.
 - `--breakdown` accepts `monthly`, `weekly` and `daily`; weeks are anchored on Monday.
